@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -9,7 +9,7 @@ class BaseSchema(BaseModel):
 # User Schemas
 class UserBase(BaseSchema):
     username: str = Field(..., min_length=3, max_length=50)
-    email: EmailStr
+    email: str = Field(..., max_length=100)  # Using str instead of EmailStr to avoid email-validator dependency
     full_name: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     bio: Optional[str] = Field(None, max_length=500)
@@ -19,7 +19,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseSchema):
     username: Optional[str] = Field(None, min_length=3, max_length=50)
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     full_name: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=20)
     bio: Optional[str] = Field(None, max_length=500)
@@ -86,6 +86,7 @@ class MessageResponse(MessageBase):
     sentiment_score: Optional[float]
     emotion_detected: Optional[str]
     confidence_score: Optional[float]
+    message_metadata: Optional[Dict[str, Any]]  # Updated field name
     created_at: datetime
 
 # AI Conversation Schemas

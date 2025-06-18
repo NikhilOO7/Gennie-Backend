@@ -51,7 +51,7 @@ class Message(Base):
     
     # Message type and metadata (RENAMED from 'metadata' to avoid SQLAlchemy conflict)
     message_type = Column(String(20), default="text")  # text, image, voice, system
-    message_message_message_metadata = Column(JSON, nullable=True)  # Changed from 'metadata' to 'message_metadata'
+    message_message_metadata = Column(JSON, nullable=True)  # Changed from 'metadata' to 'message_metadata'
     
     # Message processing
     tokens_used = Column(Integer, nullable=True)
