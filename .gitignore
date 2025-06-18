@@ -1,8 +1,12 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -19,15 +23,40 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Virtual Environment
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
 venv/
 ENV/
-env/
-.venv/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
 # IDE
-.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -37,25 +66,28 @@ env/
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-logs/
-
 # Database
 *.db
 *.sqlite3
 
-# Environment
-.env
-.env.local
+# Redis dump
+dump.rdb
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.mypy_cache/
+# Logs
+logs/
+*.log
 
-# Temporary
-*.tmp
-*.temp
-*.bak
+# Data directories
+data/postgres/*
+data/redis/*
+!data/postgres/.gitkeep
+!data/redis/.gitkeep
+
+# Backup
+backup_before_cleanup/
+
+# Setup files (exclude from production deployment)
+setup/development/
+setup/testing/
+setup/scripts/
+setup/documentation/
