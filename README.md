@@ -35,8 +35,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/NikhilOO7/chat-backend.git
-cd chat-backend
+git clone https://github.com/NikhilOO7/Gennie-Backend.git
+cd Gennie-Backend
 
 # Development setup (installs dependencies, starts services, runs migrations)
 python setup.py setup --env dev
@@ -49,8 +49,8 @@ python setup.py start --env dev
 
 ```bash
 # Clone and navigate
-git clone https://github.com/NikhilOO7/chat-backend.git
-cd chat-backend
+git clone https://github.com/NikhilOO7/Gennie-Backend.git
+cd Gennie-Backend
 
 # Create virtual environment
 python -m venv venv
@@ -78,8 +78,8 @@ uvicorn app.main:app --reload
 ### Option 3: Docker-Only Setup
 
 ```bash
-git clone https://github.com/NikhilOO7/chat-backend.git
-cd chat-backend
+git clone https://github.com/NikhilOO7/Gennie-Backend.git
+cd Gennie-Backend
 
 # Start all services including the API
 docker-compose up -d
@@ -90,7 +90,7 @@ docker-compose up -d
 ## 📁 Project Architecture
 
 ```
-chat-backend/
+Gennie-Backend/
 ├── 📁 app/                     # Application source code
 │   ├── 📁 api/                # API layer
 │   │   └── 📁 v1/            # API version 1
@@ -473,7 +473,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **NikhilOO7**
 - GitHub: [@NikhilOO7](https://github.com/NikhilOO7)
-- Project: [chat-backend](https://github.com/NikhilOO7/chat-backend)
+- Project: [Gennie-Backend](https://github.com/NikhilOO7/Gennie-Backend)
 
 ## 🙏 Acknowledgments
 
@@ -489,6 +489,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ using FastAPI and OpenAI**
 
-[⭐ Star this repository](https://github.com/NikhilOO7/chat-backend) if you find it helpful!
+[⭐ Star this repository](https://github.com/NikhilOO7/Gennie-Backend) if you find it helpful!
 
 </div>
