@@ -103,33 +103,33 @@ async def detailed_health_check(db: Session = Depends(get_db)):
         redis_time = (datetime.utcnow() - redis_start).total_seconds()
         
         # System info
-    #     import psutil
-    #     cpu_percent = psutil.cpu_percent(interval=1)
-    #     memory = psutil.virtual_memory()
-    #     disk = psutil.disk_usage('/')
+        import psutil
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
         
-    #     return {
-    #         "status": "healthy",
-    #         "timestamp": datetime.utcnow().isoformat(),
-    #         "version": settings.project_version,
-    #         "environment": settings.environment,
-    #         "components": {
-    #             "database": {
-    #                 "status": "healthy",
-    #                 "response_time_seconds": db_time
-    #             },
-    #             "redis": {
-    #                 "status": "healthy",
-    #                 "response_time_seconds": redis_time
-    #             }
-    #         },
-    #         "system": {
-    #             "cpu_percent": cpu_percent,
-    #             "memory_percent": memory.percent,
-    #             "disk_percent": (disk.used / disk.total) * 100,
-    #             "available_memory_gb": round(memory.available / (1024**3), 2)
-    #         }
-    #     }
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": settings.project_version,
+            "environment": settings.environment,
+            "components": {
+                "database": {
+                    "status": "healthy",
+                    "response_time_seconds": db_time
+                },
+                "redis": {
+                    "status": "healthy",
+                    "response_time_seconds": redis_time
+                }
+            },
+            "system": {
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory.percent,
+                "disk_percent": (disk.used / disk.total) * 100,
+                "available_memory_gb": round(memory.available / (1024**3), 2)
+            }
+        }
     except Exception as e:
         raise HTTPException(
             status_code=503,
