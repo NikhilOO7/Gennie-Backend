@@ -1,80 +1,32 @@
+version: '3.8'
+
 services:
   postgres:
-    image: postgres:15
-    container_name: chatbot_postgres
+    image: postgres:15-alpine
+    container_name: chat_backend_postgres
     environment:
-      POSTGRES_DB: chatbot_db
-      POSTGRES_USER: chatbot_user
-      POSTGRES_PASSWORD: chatbot_password
-      POSTGRES_HOST_AUTH_METHOD: trust
+      # Create postgres superuser (required by PostgreSQL)
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_admin_password
+      # Also create our app database
+      POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chatbot_user -d chatbot_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: chatbot_redis
-    command: redis-server --appendonly yes --requirepass ""
+    container_name: chat_backend_redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
     restart: unless-stopped
-
-  # Optional: pgAdmin for database management
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: chatbot_pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@chatbot.com
-      PGADMIN_DEFAULT_PASSWORD: admin123
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    depends_on:
-      - postgres
-    restart: unless-stopped
-    profiles:
-      - tools
-
-  # Optional: Redis Commander for Redis management
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: chatbot_redis_commander
-    environment:
-      REDIS_HOSTS: local:redis:6379
-    ports:
-      - "8081:8081"
-    depends_on:
-      - redis
-    restart: unless-stopped
-    profiles:
-      - tools
+    command: redis-server --appendonly yes
 
 volumes:
   postgres_data:
-    driver: local
   redis_data:
-    driver: local
-  pgadmin_data:
-    driver: local
-
-networks:
-  default:
-    name: chatbot_network

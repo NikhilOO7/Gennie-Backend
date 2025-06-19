@@ -1,61 +1,128 @@
+"""
+Application configuration settings
+"""
+
 import os
-from typing import Optional, List
-from pydantic_settings import BaseSettings
-import json
+from typing import List, Union, Any
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
-    # Database Configuration
-    database_url: str = os.getenv("DATABASE_URL", 
-        "postgresql://chatbot_user:chatbot_password@localhost:5432/chatbot_db")
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    """Application settings from environment variables"""
     
-    # OpenAI Configuration
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
-    openai_temperature: float = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
-    openai_max_tokens: int = int(os.getenv("OPENAI_MAX_TOKENS", "1000"))
+    # Model configuration
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"
+    )
     
-    # Embeddings (if you need it later)
-    embeddings_model: str = os.getenv("EMBEDDINGS_MODEL", "text-embedding-ada-002")
+    # Database settings
+    database_url: str = Field(
+        default="postgresql://chatbot_user:chatbot_password@localhost:5432/chatbot_db",
+        description="Database connection URL"
+    )
     
-    # Security Configuration
-    secret_key: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-    algorithm: str = os.getenv("ALGORITHM", "HS256")
-    access_token_expire_minutes: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+    # Redis settings  
+    redis_url: str = Field(
+        default="redis://localhost:6379",
+        description="Redis connection URL"
+    )
     
-    # Application Configuration
-    environment: str = os.getenv("ENVIRONMENT", "development")
-    debug: bool = os.getenv("DEBUG", "True").lower() == "true"
-    host: str = os.getenv("HOST", "0.0.0.0")
-    port: int = int(os.getenv("PORT", "8000"))
+    # OpenAI settings
+    openai_api_key: str = Field(
+        default="your_openai_api_key_here",
+        description="OpenAI API key"
+    )
+    openai_model: str = Field(
+        default="gpt-3.5-turbo",
+        description="OpenAI model to use"
+    )
+    openai_temperature: float = Field(
+        default=0.7,
+        description="OpenAI temperature setting"
+    )
+    openai_max_tokens: int = Field(
+        default=1000,
+        description="Maximum tokens for OpenAI responses"
+    )
     
-    # API Configuration
-    api_v1_str: str = "/api/v1"
-    project_name: str = "AI Chatbot Backend"
-    project_version: str = "1.0.0"
+    # Embeddings model
+    embeddings_model: str = Field(
+        default="text-embedding-ada-002",
+        description="Embeddings model to use"
+    )
     
-    # CORS Configuration - handle the JSON string from .env
-    cors_origins: List[str] = []
+    # Application settings
+    secret_key: str = Field(
+        default="your-super-secret-key-change-this-in-production-min-32-chars-long",
+        description="Secret key for JWT tokens"
+    )
+    debug: bool = Field(
+        default=True,
+        description="Debug mode"
+    )
+    environment: str = Field(
+        default="development",
+        description="Application environment"
+    )
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # Parse CORS origins from environment variable
-        cors_env = os.getenv("CORS_ORIGINS", '["*"]')
-        try:
-            if cors_env.startswith('[') and cors_env.endswith(']'):
-                # It's a JSON array string
-                self.cors_origins = json.loads(cors_env)
+    # JWT settings
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="JWT algorithm"
+    )
+    access_token_expire_minutes: int = Field(
+        default=30,
+        description="JWT token expiration in minutes"
+    )
+    
+    # CORS settings - handle both string and list formats
+    cors_origins: Union[str, List[str]] = Field(
+        default="http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,*",
+        description="CORS allowed origins"
+    )
+    
+    @field_validator('cors_origins')
+    @classmethod
+    def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        """Parse CORS origins from string or list format"""
+        if isinstance(v, str):
+            # Handle comma-separated string
+            if v.startswith('[') and v.endswith(']'):
+                # Handle JSON-like string format
+                import json
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    # Fallback to comma-separated parsing
+                    return [origin.strip().strip('"\'') for origin in v.strip('[]').split(',')]
             else:
-                # It's a simple string, split by comma
-                self.cors_origins = [origin.strip() for origin in cors_env.split(',')]
-        except (json.JSONDecodeError, ValueError):
-            # Fallback to default
-            self.cors_origins = ["*"]
+                # Handle simple comma-separated string
+                return [origin.strip() for origin in v.split(',') if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        else:
+            return ["*"]  # Default fallback
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "allow"  # Allow extra fields from .env
+    # API settings
+    api_v1_str: str = Field(
+        default="/api/v1",
+        description="API version 1 prefix"
+    )
+    
+    # Project settings
+    project_name: str = Field(
+        default="Chat Backend API",
+        description="Project name"
+    )
+    project_version: str = Field(
+        default="1.0.0",
+        description="Project version"
+    )
 
-# Create global settings instance
+
+# Create settings instance
 settings = Settings()
