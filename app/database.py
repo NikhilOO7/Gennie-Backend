@@ -1,38 +1,36 @@
-"""Database configuration and session management."""
+from pydantic import BaseSettings
+from typing import Optional
 
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+class Settings(BaseSettings):
+    # Database settings
+    DATABASE_URL: str = "postgresql://username:password@localhost:5432/chatbot_db"
+    REDIS_URL: str = "redis://localhost:6379"
+    
+    # OpenAI settings
+    OPENAI_API_KEY: str
+    OPENAI_MODEL: str = "gpt-3.5-turbo"
+    
+    # JWT settings
+    SECRET_KEY: str = "your-secret-key-change-this"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    
+    # App settings
+    APP_NAME: str = "AI Chatbot API"
+    DEBUG: bool = False
+    VERSION: str = "1.0.0"
+    
+    # CORS settings
+    ALLOWED_ORIGINS: list = ["*"]
+    
+    # Rate limiting
+    RATE_LIMIT_PER_MINUTE: int = 60
+    
+    # File upload settings
+    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+    UPLOAD_FOLDER: str = "uploads"
+    
+    class Config:
+        env_file = ".env"
 
-# Load environment variables
-load_dotenv()
-
-# Database URL from environment
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is not set")
-
-# Create engine with proper configuration
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    echo=bool(os.getenv("DEBUG", "False").lower() == "true")
-)
-
-# Session configuration
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Base class for models
-Base = declarative_base()
-
-# Dependency to get DB session
-def get_db():
-    """Get database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+settings = Settings()
