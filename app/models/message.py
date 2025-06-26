@@ -1,8 +1,10 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Boolean, Enum
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.database import Base
+from datetime import datetime, timezone
 import enum
+
+from app.database import Base
 
 class SenderType(enum.Enum):
     USER = "user"
@@ -23,11 +25,11 @@ class Message(Base):
     
     # Message content
     content = Column(Text, nullable=False)
-    sender_type = Column(Enum(SenderType), nullable=False)
+    sender_type = Column(String(20), nullable=False)  # Using String instead of Enum for simplicity
     
-    # Message metadata
+    # Message properties
     message_type = Column(String(20), default="text")  # "text", "image", "file", "system"
-    status = Column(Enum(MessageStatus), default=MessageStatus.SENT)
+    status = Column(String(20), default="sent")  # Using String instead of Enum
     parent_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)  # For replies
     
     # AI-related data
@@ -35,13 +37,13 @@ class Message(Base):
     sentiment_score = Column(String(10), nullable=True)  # Positive/Negative/Neutral
     confidence_score = Column(String(10), nullable=True)  # AI confidence in response
     
-    # Processing metadata
+    # Processing data
     processing_time = Column(String(10), nullable=True)  # Time taken to generate response
     model_used = Column(String(50), nullable=True)  # AI model used for response
     tokens_used = Column(Integer, nullable=True)  # Number of tokens used
     
-    # Additional metadata
-    metadata = Column(JSON, nullable=True)  # Additional flexible metadata
+    # Additional data (renamed from 'metadata' to avoid SQLAlchemy conflict)
+    message_metadata = Column(JSON, nullable=True)  # Additional flexible data
     is_edited = Column(Boolean, default=False)
     edit_history = Column(JSON, nullable=True)  # History of edits
     
@@ -50,8 +52,9 @@ class Message(Base):
     is_flagged = Column(Boolean, default=False)
     flag_reason = Column(String(100), nullable=True)
     
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Timestamps
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     
     # Relationships
     chat = relationship("Chat", back_populates="messages")
@@ -59,29 +62,27 @@ class Message(Base):
     
     def __repr__(self):
         return f"<Message(id={self.id}, chat_id={self.chat_id}, sender_type={self.sender_type})>"
-
-# Emotion detection model (if you want to store emotion analysis separately)
-class Emotion(Base):
-    __tablename__ = "emotions"
     
-    id = Column(Integer, primary_key=True, index=True)
-    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False)
+    def get_metadata(self):
+        """Get message metadata (backward compatibility method)"""
+        return self.message_metadata
     
-    # Primary emotion data
-    emotion = Column(String(50), nullable=False)  # happy, sad, angry, etc.
-    intensity = Column(String(10), nullable=False)  # 0.0 to 1.0
-    confidence = Column(String(10), nullable=False)  # 0.0 to 1.0
+    def set_metadata(self, value):
+        """Set message metadata (backward compatibility method)"""
+        self.message_metadata = value
     
-    # Detailed emotion breakdown
-    emotions_detailed = Column(JSON, nullable=True)  # Detailed emotion scores
-    sentiment = Column(String(20), nullable=False)  # positive, negative, neutral
-    sentiment_score = Column(String(10), nullable=False)  # -1.0 to 1.0
-    
-    # Analysis metadata
-    analysis_method = Column(String(50), nullable=False)  # "vader", "textblob", "openai"
-    analysis_version = Column(String(20), nullable=True)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    def __repr__(self):
-        return f"<Emotion(id={self.id}, message_id={self.message_id}, emotion='{self.emotion}')>"
+    def to_dict(self) -> dict:
+        """Convert message to dictionary"""
+        return {
+            "id": self.id,
+            "chat_id": self.chat_id,
+            "content": self.content,
+            "sender_type": self.sender_type,
+            "message_type": self.message_type,
+            "emotion_data": self.emotion_data,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "metadata": self.message_metadata,  # Backward compatibility in dict output
+            "message_metadata": self.message_metadata,  # Also include new field name
+            "is_edited": self.is_edited,
+            "is_favorite": self.is_favorite
+        }

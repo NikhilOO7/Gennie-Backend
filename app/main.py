@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 import time
 import logging
+from datetime import datetime, timezone
 
 from app.config import settings
 from app.database import create_tables, check_db_health, check_redis_health
@@ -13,13 +15,50 @@ from app.routers import auth, users, chat, ai, websocket
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Modern FastAPI lifespan event handler replacing deprecated on_event
+    """
+    # Startup
+    logger.info("🚀 Starting AI Chatbot Backend...")
+    try:
+        # Create database tables
+        await create_tables()
+        logger.info("✅ Database tables created/verified")
+        
+        # Check database health
+        if check_db_health():
+            logger.info("✅ Database connection healthy")
+        else:
+            logger.warning("⚠️ Database connection issues detected")
+            
+        # Check Redis health
+        if check_redis_health():
+            logger.info("✅ Redis connection healthy")
+        else:
+            logger.warning("⚠️ Redis connection issues detected")
+            
+        logger.info("🎉 Application startup complete!")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {str(e)}")
+        raise
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down AI Chatbot Backend...")
+    logger.info("👋 Application shutdown complete!")
+
+# Create FastAPI app with lifespan
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
-    description="Advanced AI Chatbot Backend API",
+    description="Advanced AI Chatbot Backend API with Modern FastAPI Standards",
     docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None
+    redoc_url="/redoc" if settings.DEBUG else None,
+    lifespan=lifespan  # Modern lifespan replacement for on_event
 )
 
 # Add middleware
@@ -55,7 +94,7 @@ app.include_router(websocket.router)
 # Health check endpoints
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with modern datetime handling"""
     db_healthy = check_db_health()
     redis_healthy = check_redis_health()
     
@@ -63,7 +102,7 @@ async def health_check():
     
     return {
         "status": status,
-        "timestamp": time.time(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),  # Modern timezone-aware datetime
         "version": settings.VERSION,
         "services": {
             "database": "healthy" if db_healthy else "unhealthy",
@@ -73,43 +112,13 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
+    """Root endpoint with modern datetime"""
     return {
         "message": f"Welcome to {settings.APP_NAME}",
         "version": settings.VERSION,
-        "docs": "/docs" if settings.DEBUG else "Contact admin for API documentation"
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "docs_url": "/docs" if settings.DEBUG else "Contact admin for API documentation"
     }
-
-# Exception handlers
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "Endpoint not found"}
-    )
-
-@app.exception_handler(500)
-async def internal_error_handler(request, exc):
-    logger.error(f"Internal server error: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
-
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and services on startup"""
-    logger.info("Starting up...")
-    create_tables()
-    logger.info("Database tables created/verified")
-    logger.info(f"{settings.APP_NAME} started successfully")
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("Shutting down...")
 
 if __name__ == "__main__":
     import uvicorn
@@ -117,5 +126,6 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=settings.DEBUG
+        reload=settings.DEBUG,
+        log_level="info"
     )
