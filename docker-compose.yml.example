@@ -33,12 +33,12 @@ services:
       - redis_data:/data
     networks:
       - chatbot_network
-    command: redis-server --appendonly yes --requirepass ""
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-password}""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 3
       start_period: 40s
 
   # FastAPI Application (for production)
@@ -53,7 +53,6 @@ services:
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SECRET_KEY=${SECRET_KEY}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - ENVIRONMENT=production
       - DEBUG=false
     ports:
@@ -66,7 +65,6 @@ services:
     networks:
       - chatbot_network
     volumes:
-      - ./uploads:/app/uploads
       - ./logs:/app/logs
     restart: unless-stopped
     healthcheck:
@@ -74,7 +72,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
 
   # Development FastAPI Application (with hot reload)
   app-dev:
@@ -87,7 +85,6 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - SECRET_KEY=${SECRET_KEY}
       - ENVIRONMENT=development
       - DEBUG=true
@@ -103,7 +100,6 @@ services:
     volumes:
       - .:/app
       - ./logs:/app/logs
-      - ./uploads:/app/uploads
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     profiles:
       - dev

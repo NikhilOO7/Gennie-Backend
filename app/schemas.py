@@ -1,153 +1,311 @@
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, validator, EmailStr
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
+from enum import Enum
 
 # Base schemas
 class BaseSchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    """Base schema with common configuration"""
+    
+    class Config:
+        # Enable ORM mode for SQLAlchemy integration
+        from_attributes = True
+        # Allow population by field name or alias
+        allow_population_by_field_name = True
+        # Validate assignment
+        validate_assignment = True
+        # Use enum values
+        use_enum_values = True
 
-# User Schemas
+# Common field validators
+class TimestampMixin(BaseModel):
+    """Mixin for timestamp fields"""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+# User schemas
 class UserBase(BaseSchema):
-    username: str = Field(..., min_length=3, max_length=50)
-    email: str = Field(..., max_length=100)  # Using str instead of EmailStr to avoid email-validator dependency
-    full_name: Optional[str] = Field(None, max_length=100)
-    phone: Optional[str] = Field(None, max_length=20)
+    """Base user schema"""
+    username: str = Field(..., min_length=3, max_length=50, regex=r'^[a-zA-Z0-9_]+$')
+    email: EmailStr
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
     bio: Optional[str] = Field(None, max_length=500)
+    timezone: str = Field(default="UTC", max_length=50)
+    language: str = Field(default="en", max_length=10)
+    theme: str = Field(default="light", max_length=20)
 
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=8, max_length=100)
+    """Schema for user creation"""
+    password: str = Field(..., min_length=8)
+    
+    @validator('password')
+    def validate_password_strength(cls, v):
+        """Validate password meets security requirements"""
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        
+        checks = [
+            (r'[A-Z]', 'uppercase letter'),
+            (r'[a-z]', 'lowercase letter'), 
+            (r'[0-9]', 'digit'),
+            (r'[!@#$%^&*(),.?\":{}|<>]', 'special character')
+        ]
+        
+        for pattern, desc in checks:
+            if not re.search(pattern, v):
+                raise ValueError(f'Password must contain at least one {desc}')
+        
+        return v
 
 class UserUpdate(BaseSchema):
-    username: Optional[str] = Field(None, min_length=3, max_length=50)
-    email: Optional[str] = None
-    full_name: Optional[str] = Field(None, max_length=100)
-    phone: Optional[str] = Field(None, max_length=20)
+    """Schema for user updates"""
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
     bio: Optional[str] = Field(None, max_length=500)
     avatar_url: Optional[str] = Field(None, max_length=500)
+    timezone: Optional[str] = Field(None, max_length=50)
+    language: Optional[str] = Field(None, max_length=10)
+    theme: Optional[str] = Field(None, max_length=20)
 
-class UserResponse(UserBase):
+class UserResponse(UserBase, TimestampMixin):
+    """Schema for user responses"""
     id: int
+    full_name: Optional[str]
+    display_name: str
+    avatar_url: Optional[str]
     is_active: bool
     is_verified: bool
-    avatar_url: Optional[str]
-    created_at: datetime
-    last_login: Optional[datetime]
+    is_premium: bool
+    total_chats: int
+    total_messages: int
+    last_activity: Optional[datetime]
 
-class UserLogin(BaseSchema):
-    username: str
-    password: str
-
-# Token Schemas
-class Token(BaseSchema):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-
-class TokenData(BaseSchema):
-    username: Optional[str] = None
-
-# Chat Schemas
+# Chat schemas
 class ChatBase(BaseSchema):
+    """Base chat schema"""
     title: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
+    ai_model: str = Field(default="gpt-3.5-turbo", max_length=50)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=1000, ge=1, le=4000)
 
 class ChatCreate(ChatBase):
-    pass
+    """Schema for chat creation"""
+    system_prompt: Optional[str] = Field(None, max_length=2000)
 
 class ChatUpdate(BaseSchema):
+    """Schema for chat updates"""
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
-    is_archived: Optional[bool] = None
+    ai_model: Optional[str] = Field(None, max_length=50)
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(None, ge=1, le=4000)
+    system_prompt: Optional[str] = Field(None, max_length=2000)
+    is_favorite: Optional[bool] = None
+    settings: Optional[Dict[str, Any]] = None
 
-class ChatResponse(ChatBase):
+class ChatResponse(ChatBase, TimestampMixin):
+    """Schema for chat responses"""
     id: int
     user_id: int
     is_active: bool
     is_archived: bool
+    is_favorite: bool
     total_messages: int
+    total_tokens_used: int
+    last_activity_at: Optional[datetime]
     last_message_at: Optional[datetime]
-    created_at: datetime
-    updated_at: Optional[datetime]
 
-# Message Schemas
+# Message schemas
+class MessageType(str, Enum):
+    """Message type enumeration"""
+    TEXT = "text"
+    IMAGE = "image"
+    FILE = "file"
+    AUDIO = "audio"
+    VIDEO = "video"
+    SYSTEM = "system"
+
+class SenderType(str, Enum):
+    """Sender type enumeration"""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
 class MessageBase(BaseSchema):
-    content: str = Field(..., min_length=1)
-    message_type: str = Field(default="text")
+    """Base message schema"""
+    content: str = Field(..., min_length=1, max_length=4000)
+    message_type: MessageType = MessageType.TEXT
+    sender_type: SenderType
 
 class MessageCreate(MessageBase):
+    """Schema for message creation"""
     chat_id: int
 
-class MessageResponse(MessageBase):
+class MessageResponse(MessageBase, TimestampMixin):
+    """Schema for message responses"""
     id: int
     chat_id: int
-    is_from_user: bool
-    tokens_used: Optional[int]
-    processing_time: Optional[float]
-    sentiment_score: Optional[float]
-    emotion_detected: Optional[str]
-    confidence_score: Optional[float]
-    message_metadata: Optional[Dict[str, Any]]  # Updated field name
-    created_at: datetime
+    tokens_used: int = 0
+    processing_time: Optional[float] = None
+    sentiment_score: Optional[float] = Field(None, ge=-1.0, le=1.0)
+    emotion_detected: Optional[str] = None
+    confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    is_edited: bool = False
+    is_deleted: bool = False
+    is_flagged: bool = False
 
-# AI Conversation Schemas
+# AI conversation schemas
 class ConversationRequest(BaseSchema):
+    """Schema for AI conversation requests"""
     message: str = Field(..., min_length=1, max_length=4000)
     chat_id: Optional[int] = None
     use_context: bool = True
     detect_emotion: bool = True
+    enable_personalization: bool = True
+    stream: bool = False
+    
+    @validator('message')
+    def validate_message_content(cls, v):
+        """Validate message content"""
+        if not v.strip():
+            raise ValueError('Message cannot be empty or only whitespace')
+        return v.strip()
 
 class ConversationResponse(BaseSchema):
+    """Schema for AI conversation responses"""
     response: str
     chat_id: int
-    message_id: int
-    tokens_used: int
+    user_message_id: int
+    ai_message_id: int
+    timestamp: datetime
     processing_time: float
-    emotion_detected: Optional[str] = None
-    sentiment_score: Optional[float] = None
+    token_usage: Dict[str, int]
+    emotion_data: Optional[Dict[str, Any]] = None
+    personalization_applied: bool = False
 
-# User Preferences Schemas
-class UserPreferencesBase(BaseSchema):
-    preferred_response_length: str = Field(default="medium")
-    conversation_style: str = Field(default="friendly")
-    language: str = Field(default="en")
-    timezone: str = Field(default="UTC")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=1000, ge=100, le=4000)
+# Emotion schemas
+class EmotionType(str, Enum):
+    """Emotion type enumeration"""
+    JOY = "joy"
+    SADNESS = "sadness"
+    ANGER = "anger"
+    FEAR = "fear"
+    SURPRISE = "surprise"
+    DISGUST = "disgust"
+    NEUTRAL = "neutral"
+    EXCITEMENT = "excitement"
+    ANXIETY = "anxiety"
+    FRUSTRATION = "frustration"
+    CONTENTMENT = "contentment"
 
-class UserPreferencesCreate(UserPreferencesBase):
-    pass
+class EmotionAnalysis(BaseSchema):
+    """Schema for emotion analysis results"""
+    primary_emotion: EmotionType
+    secondary_emotion: Optional[EmotionType] = None
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    sentiment_score: float = Field(..., ge=-1.0, le=1.0)
+    emotion_intensity: float = Field(..., ge=0.0, le=1.0)
+    analysis_method: str
+    processing_time: float
 
-class UserPreferencesUpdate(BaseSchema):
-    preferred_response_length: Optional[str] = None
-    conversation_style: Optional[str] = None
-    language: Optional[str] = None
-    timezone: Optional[str] = None
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(None, ge=100, le=4000)
-    enable_emotion_detection: Optional[bool] = None
-    enable_context_memory: Optional[bool] = None
-    enable_learning: Optional[bool] = None
+# Pagination schemas
+class PaginationParams(BaseSchema):
+    """Schema for pagination parameters"""
+    page: int = Field(1, ge=1, description="Page number")
+    page_size: int = Field(20, ge=1, le=100, description="Items per page")
 
-class UserPreferencesResponse(UserPreferencesBase):
-    id: int
-    user_id: int
-    enable_emotion_detection: bool
-    enable_context_memory: bool
-    enable_learning: bool
-    interests: Optional[List[str]] = None
-    created_at: datetime
-    updated_at: Optional[datetime]
+class PaginatedResponse(BaseSchema):
+    """Base schema for paginated responses"""
+    total_count: int
+    page: int
+    page_size: int
+    has_next: bool
+    has_previous: bool
 
-# Health Check Schema
-class HealthResponse(BaseSchema):
-    status: str
-    message: str
+# Error schemas
+class ErrorResponse(BaseSchema):
+    """Schema for error responses"""
+    error: str
+    error_code: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    timestamp: datetime
+    request_id: Optional[str] = None
+
+class ValidationErrorResponse(ErrorResponse):
+    """Schema for validation error responses"""
+    validation_errors: List[Dict[str, Any]]
+
+# Health check schemas
+class HealthStatus(str, Enum):
+    """Health status enumeration"""
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+
+class ServiceHealth(BaseSchema):
+    """Schema for individual service health"""
+    status: HealthStatus
+    response_time_ms: Optional[float] = None
+    last_check: datetime
+    error: Optional[str] = None
+
+class HealthCheckResponse(BaseSchema):
+    """Schema for health check responses"""
+    status: HealthStatus
     timestamp: datetime
     version: str
     environment: str
+    checks: Dict[str, ServiceHealth]
+    response_time_seconds: float
 
-# Error Schemas
-class ErrorResponse(BaseSchema):
-    error: str
-    detail: Optional[str] = None
-    code: Optional[int] = None
+# WebSocket schemas
+class WebSocketMessageType(str, Enum):
+    """WebSocket message type enumeration"""
+    CHAT_MESSAGE = "chat_message"
+    TYPING_START = "typing_start"
+    TYPING_STOP = "typing_stop"
+    USER_JOINED = "user_joined"
+    USER_LEFT = "user_left"
+    PING = "ping"
+    PONG = "pong"
+    ERROR = "error"
+
+class WebSocketMessage(BaseSchema):
+    """Schema for WebSocket messages"""
+    type: WebSocketMessageType
+    data: Dict[str, Any]
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# Export all schemas
+__all__ = [
+    "BaseSchema",
+    "TimestampMixin",
+    "UserBase",
+    "UserCreate", 
+    "UserUpdate",
+    "UserResponse",
+    "ChatBase",
+    "ChatCreate",
+    "ChatUpdate", 
+    "ChatResponse",
+    "MessageBase",
+    "MessageCreate",
+    "MessageResponse",
+    "MessageType",
+    "SenderType",
+    "ConversationRequest",
+    "ConversationResponse",
+    "EmotionType",
+    "EmotionAnalysis",
+    "PaginationParams",
+    "PaginatedResponse",
+    "ErrorResponse",
+    "ValidationErrorResponse",
+    "HealthStatus",
+    "ServiceHealth",
+    "HealthCheckResponse",
+    "WebSocketMessageType",
+    "WebSocketMessage"
+]

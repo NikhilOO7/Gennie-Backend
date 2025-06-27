@@ -1,268 +1,408 @@
-from sqlalchemy import create_engine, text
+"""
+Database Configuration and Connection Management
+with async SQLAlchemy 2.0+ and comprehensive connection handling
+"""
+
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from contextlib import contextmanager
-import redis.asyncio as redis
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.pool import StaticPool
+from contextlib import asynccontextmanager
 import logging
-import os
-from typing import Generator
+import asyncio
+from typing import AsyncGenerator, Optional
+import redis.asyncio as aioredis
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Database setup
-try:
-    engine = create_engine(
-        settings.DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        pool_size=10,
-        max_overflow=20,
-        echo=settings.DEBUG
-    )
-    
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base = declarative_base()
-    
-    logger.info("✅ Database engine created successfully")
-    
-except Exception as e:
-    logger.error(f"❌ Failed to create database engine: {str(e)}")
-    # Don't raise here, let the app start but log the error
-    engine = None
-    SessionLocal = None
-    Base = None
+# Database URL configuration
+if settings.is_testing:
+    # Use in-memory SQLite for testing
+    DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+    SYNC_DATABASE_URL = "sqlite:///:memory:"
+else:
+    # Convert to async URL for production/development
+    DATABASE_URL = settings.effective_database_url
+    if "postgresql://" in DATABASE_URL:
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    SYNC_DATABASE_URL = settings.database_url_sync
 
-# Redis setup
-try:
-    redis_client = redis.from_url(
-        settings.REDIS_URL,
-        encoding="utf-8",
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
-        retry_on_timeout=True,
-        health_check_interval=30
-    )
-    logger.info("✅ Redis client created successfully")
-    
-except Exception as e:
-    logger.error(f"❌ Failed to create Redis client: {str(e)}")
-    redis_client = None
+# Create async engine with optimized settings
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=settings.DATABASE_ECHO,
+    pool_size=settings.DATABASE_POOL_SIZE,
+    max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    pool_timeout=settings.DATABASE_POOL_TIMEOUT,
+    pool_recycle=settings.DATABASE_POOL_RECYCLE,
+    # SQLite specific settings
+    poolclass=StaticPool if "sqlite" in DATABASE_URL else None,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+    # Connection pool settings
+    pool_pre_ping=True,  # Verify connections before use
+    pool_reset_on_return='commit',  # Reset connections on return
+)
 
-def get_db() -> Generator[Session, None, None]:
-    """
-    Database session dependency with proper error handling
-    """
-    if not SessionLocal:
-        logger.error("⚠️ Database module not available - SessionLocal is None")
-        raise Exception("Database module not available")
+# Create sync engine for Alembic migrations
+sync_engine = create_engine(
+    SYNC_DATABASE_URL,
+    echo=settings.DATABASE_ECHO,
+    pool_size=settings.DATABASE_POOL_SIZE,
+    max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    pool_timeout=settings.DATABASE_POOL_TIMEOUT,
+    pool_recycle=settings.DATABASE_POOL_RECYCLE,
+    poolclass=StaticPool if "sqlite" in SYNC_DATABASE_URL else None,
+    connect_args={"check_same_thread": False} if "sqlite" in SYNC_DATABASE_URL else {},
+    pool_pre_ping=True,
+)
+
+# Create async session factory
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+# Create base class for models
+Base = declarative_base()
+
+# Redis connection
+redis_client: Optional[aioredis.Redis] = None
+
+async def get_redis() -> aioredis.Redis:
+    """Get Redis client with connection pooling"""
+    global redis_client
     
-    db = SessionLocal()
+    if redis_client is None:
+        try:
+            redis_client = aioredis.from_url(
+                settings.REDIS_URL,
+                password=settings.REDIS_PASSWORD,
+                db=settings.REDIS_DB,
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                retry_on_timeout=settings.REDIS_RETRY_ON_TIMEOUT,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=settings.REDIS_CONNECTION_TIMEOUT,
+                decode_responses=True,
+                health_check_interval=30,
+            )
+            
+            # Test connection
+            await redis_client.ping()
+            logger.info("✅ Redis connection established")
+            
+        except Exception as e:
+            logger.error(f"❌ Redis connection failed: {str(e)}")
+            redis_client = None
+            
+    return redis_client
+
+async def close_redis():
+    """Close Redis connection"""
+    global redis_client
+    if redis_client:
+        await redis_client.close()
+        redis_client = None
+        logger.info("✅ Redis connection closed")
+
+# Dependency to get database session
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency function to get database session with proper error handling
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        except Exception as e:
+            logger.error(f"Database session error: {str(e)}")
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+@asynccontextmanager
+async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Context manager for database sessions
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        except Exception as e:
+            logger.error(f"Database context error: {str(e)}")
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+# Database event listeners for better connection handling
+@event.listens_for(engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Set SQLite pragmas for better performance"""
+    if "sqlite" in str(dbapi_connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA cache_size=10000")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.close()
+
+@event.listens_for(engine.sync_engine, "checkout")
+def receive_checkout(dbapi_connection, connection_record, connection_proxy):
+    """Handle connection checkout"""
+    logger.debug("Database connection checked out")
+
+@event.listens_for(engine.sync_engine, "checkin")
+def receive_checkin(dbapi_connection, connection_record):
+    """Handle connection checkin"""
+    logger.debug("Database connection checked in")
+
+async def create_tables():
+    """
+    Create all database tables
+    """
     try:
-        yield db
+        logger.info("Creating database tables...")
+        
+        # Import all models to ensure they're registered
+        from app.models import user, chat, message, user_preference, emotion
+        
+        async with engine.begin() as conn:
+            # Create all tables
+            await conn.run_sync(Base.metadata.create_all)
+            
+        logger.info("✅ Database tables created successfully")
+        
     except Exception as e:
-        logger.error(f"Database session error: {str(e)}")
-        db.rollback()
+        logger.error(f"❌ Error creating database tables: {str(e)}")
         raise
-    finally:
-        db.close()
 
-async def get_redis():
+async def drop_tables():
     """
-    Redis client dependency with proper error handling
+    Drop all database tables (for testing)
     """
-    if not redis_client:
-        logger.error("⚠️ Redis module not available - redis_client is None")
-        raise Exception("Redis module not available")
-    
     try:
-        # Test connection
-        await redis_client.ping()
-        return redis_client
+        logger.info("Dropping database tables...")
+        
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            
+        logger.info("✅ Database tables dropped successfully")
+        
     except Exception as e:
-        logger.error(f"Redis connection error: {str(e)}")
-        raise Exception("Redis connection failed")
+        logger.error(f"❌ Error dropping database tables: {str(e)}")
+        raise
 
-def check_db_health() -> bool:
+async def check_db_health() -> bool:
     """
-    Check database connection health
+    Check database health with comprehensive testing
     """
-    if not engine:
-        logger.warning("⚠️ Database module not available")
-        return False
-    
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        logger.info("✅ Database health check passed")
-        return True
+        async with AsyncSessionLocal() as session:
+            # Test basic connection
+            result = await session.execute(text("SELECT 1"))
+            await session.commit()
+            
+            if result.scalar() == 1:
+                logger.info("✅ Database health check passed")
+                return True
+            else:
+                logger.error("❌ Database health check failed: unexpected result")
+                return False
+                
     except Exception as e:
         logger.error(f"❌ Database health check failed: {str(e)}")
         return False
 
 async def check_redis_health() -> bool:
     """
-    Check Redis connection health
+    Check Redis health with comprehensive testing
     """
-    if not redis_client:
-        logger.warning("⚠️ Redis module not available")
-        return False
-    
     try:
-        await redis_client.ping()
-        logger.info("✅ Redis health check passed")
-        return True
+        redis = await get_redis()
+        if redis is None:
+            return False
+            
+        # Test basic operations
+        await redis.ping()
+        
+        # Test set/get operations
+        test_key = "health_check_test"
+        await redis.set(test_key, "test_value", ex=10)
+        result = await redis.get(test_key)
+        await redis.delete(test_key)
+        
+        if result == "test_value":
+            logger.info("✅ Redis health check passed")
+            return True
+        else:
+            logger.error("❌ Redis health check failed: unexpected result")
+            return False
+            
+    except RedisConnectionError as e:
+        logger.error(f"❌ Redis connection failed: {str(e)}")
+        return False
     except Exception as e:
         logger.error(f"❌ Redis health check failed: {str(e)}")
         return False
 
-async def create_tables():
+async def get_db_stats() -> dict:
     """
-    Create database tables if they don't exist
-    """
-    if not engine or not Base:
-        logger.error("⚠️ Database module not available - cannot create tables")
-        return False
-    
-    try:
-        # Import all models to ensure they're registered with Base
-        from app.models.user import User
-        from app.models.chat import Chat  
-        from app.models.message import Message
-        from app.models.emotion import Emotion
-        from app.models.user_preferences import UserPreferences
-        
-        logger.info("✅ All models imported successfully")
-        
-        # Create all tables
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database tables created/verified successfully")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to create database tables: {str(e)}")
-        logger.error(f"Error details: {type(e).__name__}: {str(e)}")
-        return False
-
-@contextmanager
-def get_db_context():
-    """
-    Context manager for database sessions
-    """
-    if not SessionLocal:
-        raise Exception("Database module not available")
-    
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        logger.error(f"Database context error: {str(e)}")
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-async def init_redis_connection():
-    """
-    Initialize Redis connection with retry logic
-    """
-    global redis_client
-    
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            if redis_client:
-                await redis_client.ping()
-                logger.info("✅ Redis connection initialized successfully")
-                return True
-            else:
-                redis_client = redis.from_url(
-                    settings.REDIS_URL,
-                    encoding="utf-8",
-                    decode_responses=True,
-                    socket_connect_timeout=5,
-                    socket_timeout=5,
-                    retry_on_timeout=True,
-                    health_check_interval=30
-                )
-                await redis_client.ping()
-                logger.info("✅ Redis connection re-established")
-                return True
-                
-        except Exception as e:
-            retry_count += 1
-            logger.warning(f"⚠️ Redis connection attempt {retry_count} failed: {str(e)}")
-            if retry_count >= max_retries:
-                logger.error("❌ Failed to initialize Redis connection after all retries")
-                return False
-    
-    return False
-
-async def close_connections():
-    """
-    Close all database and Redis connections
+    Get database statistics
     """
     try:
-        if redis_client:
-            await redis_client.close()
-            logger.info("✅ Redis connection closed")
-        
-        if engine:
-            engine.dispose()
-            logger.info("✅ Database engine disposed")
+        async with AsyncSessionLocal() as session:
+            stats = {}
+            
+            # Connection pool stats
+            pool = engine.pool
+            stats["pool_size"] = pool.size()
+            stats["checked_out_connections"] = pool.checkedout()
+            stats["overflow_connections"] = pool.overflow()
+            stats["checked_in_connections"] = pool.checkedin()
+            
+            # Database-specific stats
+            if "postgresql" in DATABASE_URL:
+                # PostgreSQL specific stats
+                result = await session.execute(text("""
+                    SELECT 
+                        schemaname,
+                        tablename,
+                        n_tup_ins as inserts,
+                        n_tup_upd as updates,
+                        n_tup_del as deletes
+                    FROM pg_stat_user_tables
+                    ORDER BY schemaname, tablename;
+                """))
+                stats["table_stats"] = [dict(row) for row in result]
+            
+            return stats
             
     except Exception as e:
-        logger.error(f"❌ Error closing connections: {str(e)}")
+        logger.error(f"Error getting database stats: {str(e)}")
+        return {"error": str(e)}
 
-# Health check functions for the application
-def get_database_info():
+async def get_redis_stats() -> dict:
     """
-    Get database connection information
+    Get Redis statistics
     """
-    if not engine:
-        return {"status": "unavailable", "url": "not configured"}
-    
     try:
-        with engine.connect() as connection:
-            result = connection.execute(text("SELECT version()"))
-            version = result.fetchone()[0]
-            return {
-                "status": "connected",
-                "url": settings.DATABASE_URL.split("@")[1] if "@" in settings.DATABASE_URL else "hidden",
-                "version": version,
-                "pool_size": engine.pool.size(),
-                "checked_out": engine.pool.checkedout()
-            }
-    except Exception as e:
+        redis = await get_redis()
+        if redis is None:
+            return {"error": "Redis not available"}
+            
+        info = await redis.info()
+        
         return {
-            "status": "error",
-            "error": str(e),
-            "url": settings.DATABASE_URL.split("@")[1] if "@" in settings.DATABASE_URL else "hidden"
-        }
-
-async def get_redis_info():
-    """
-    Get Redis connection information
-    """
-    if not redis_client:
-        return {"status": "unavailable", "url": "not configured"}
-    
-    try:
-        info = await redis_client.info()
-        return {
-            "status": "connected",
-            "url": settings.REDIS_URL.split("@")[1] if "@" in settings.REDIS_URL else settings.REDIS_URL,
-            "version": info.get("redis_version", "unknown"),
             "connected_clients": info.get("connected_clients", 0),
-            "used_memory": info.get("used_memory_human", "unknown")
+            "used_memory": info.get("used_memory", 0),
+            "used_memory_human": info.get("used_memory_human", "0B"),
+            "total_commands_processed": info.get("total_commands_processed", 0),
+            "keyspace_hits": info.get("keyspace_hits", 0),
+            "keyspace_misses": info.get("keyspace_misses", 0),
+            "uptime_in_seconds": info.get("uptime_in_seconds", 0),
         }
+        
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "url": settings.REDIS_URL.split("@")[1] if "@" in settings.REDIS_URL else settings.REDIS_URL
-        }
+        logger.error(f"Error getting Redis stats: {str(e)}")
+        return {"error": str(e)}
+
+# Database utility functions
+async def execute_raw_sql(query: str, params: dict = None) -> list:
+    """
+    Execute raw SQL query with parameters
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text(query), params or {})
+            await session.commit()
+            return [dict(row) for row in result]
+            
+    except Exception as e:
+        logger.error(f"Error executing raw SQL: {str(e)}")
+        raise
+
+async def backup_database():
+    """
+    Create database backup (implementation depends on database type)
+    """
+    # This would be implemented based on the specific database type
+    # For PostgreSQL, you might use pg_dump
+    # For SQLite, you might copy the database file
+    logger.info("Database backup functionality not implemented")
+    pass
+
+async def cleanup_old_data():
+    """
+    Clean up old data based on retention policies
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            # Example: Clean up old chat sessions
+            cleanup_query = text("""
+                DELETE FROM messages 
+                WHERE created_at < NOW() - INTERVAL '90 days'
+                AND chat_id IN (
+                    SELECT id FROM chats 
+                    WHERE last_activity_at < NOW() - INTERVAL '90 days'
+                )
+            """)
+            
+            result = await session.execute(cleanup_query)
+            await session.commit()
+            
+            logger.info(f"Cleaned up {result.rowcount} old messages")
+            
+    except Exception as e:
+        logger.error(f"Error during data cleanup: {str(e)}")
+
+# Initialize database on module import
+async def init_database():
+    """
+    Initialize database with proper setup
+    """
+    try:
+        await create_tables()
+        logger.info("Database initialization completed")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
+        raise
+
+# Cleanup function for application shutdown
+async def cleanup_database():
+    """
+    Cleanup database connections on shutdown
+    """
+    try:
+        await close_redis()
+        await engine.dispose()
+        logger.info("Database cleanup completed")
+    except Exception as e:
+        logger.error(f"Database cleanup failed: {str(e)}")
+
+# Export main components
+__all__ = [
+    "engine",
+    "sync_engine", 
+    "AsyncSessionLocal",
+    "Base",
+    "get_db",
+    "get_db_context",
+    "get_redis",
+    "create_tables",
+    "drop_tables",
+    "check_db_health",
+    "check_redis_health",
+    "get_db_stats",
+    "get_redis_stats",
+    "execute_raw_sql",
+    "init_database",
+    "cleanup_database"
+]

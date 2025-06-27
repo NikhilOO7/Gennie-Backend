@@ -1,88 +1,381 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, Boolean, Enum
-from sqlalchemy.sql import func
+"""
+Message Model - Individual chat messages
+"""
+
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON, ForeignKey, Index, Float, Enum
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional, Union
 import enum
+import hashlib
 
 from app.database import Base
 
+class MessageType(enum.Enum):
+    """Message type enumeration"""
+    TEXT = "text"
+    IMAGE = "image"
+    FILE = "file"
+    AUDIO = "audio"
+    VIDEO = "video"
+    SYSTEM = "system"
+    ERROR = "error"
+
 class SenderType(enum.Enum):
+    """Sender type enumeration"""
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
 
-class MessageStatus(enum.Enum):
-    SENT = "sent"
-    DELIVERED = "delivered"
-    READ = "read"
-    FAILED = "failed"
-
 class Message(Base):
+    """
+    Message model representing individual chat messages
+    Fixed: Updated field names to match existing code (message_metadata instead of metadata)
+    """
     __tablename__ = "messages"
     
+    # Primary key
     id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign key to chat
     chat_id = Column(Integer, ForeignKey("chats.id"), nullable=False, index=True)
     
     # Message content
     content = Column(Text, nullable=False)
-    sender_type = Column(String(20), nullable=False)  # Using String instead of Enum for simplicity
+    message_type = Column(Enum(MessageType), default=MessageType.TEXT, nullable=False)
+    sender_type = Column(Enum(SenderType), nullable=False)
     
-    # Message properties
-    message_type = Column(String(20), default="text")  # "text", "image", "file", "system"
-    status = Column(String(20), default="sent")  # Using String instead of Enum
-    parent_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)  # For replies
+    # Message metadata - FIXED: Using message_metadata to match existing code
+    message_metadata = Column(JSON, default=dict, nullable=False)
     
-    # AI-related data
-    emotion_data = Column(JSON, nullable=True)  # Emotion analysis results
-    sentiment_score = Column(String(10), nullable=True)  # Positive/Negative/Neutral
-    confidence_score = Column(String(10), nullable=True)  # AI confidence in response
+    # Processing information
+    tokens_used = Column(Integer, default=0, nullable=False)
+    processing_time = Column(Float, nullable=True)  # in seconds
     
-    # Processing data
-    processing_time = Column(String(10), nullable=True)  # Time taken to generate response
-    model_used = Column(String(50), nullable=True)  # AI model used for response
-    tokens_used = Column(Integer, nullable=True)  # Number of tokens used
+    # Emotion analysis results
+    sentiment_score = Column(Float, nullable=True)  # -1.0 to 1.0
+    emotion_detected = Column(String(50), nullable=True)
+    confidence_score = Column(Float, nullable=True)  # 0.0 to 1.0
     
-    # Additional data (renamed from 'metadata' to avoid SQLAlchemy conflict)
-    message_metadata = Column(JSON, nullable=True)  # Additional flexible data
-    is_edited = Column(Boolean, default=False)
-    edit_history = Column(JSON, nullable=True)  # History of edits
+    # Message status
+    is_edited = Column(Boolean, default=False, nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    is_flagged = Column(Boolean, default=False, nullable=False)
     
-    # Flags
-    is_favorite = Column(Boolean, default=False)
-    is_flagged = Column(Boolean, default=False)
-    flag_reason = Column(String(100), nullable=True)
+    # Content hash for deduplication
+    content_hash = Column(String(64), nullable=True, index=True)
     
     # Timestamps
-    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True), 
+        onupdate=func.now(),
+        nullable=True
+    )
+    timestamp = Column(DateTime(timezone=True), nullable=True)  # For compatibility with existing code
     
     # Relationships
     chat = relationship("Chat", back_populates="messages")
-    replies = relationship("Message", backref="parent", remote_side=[id])
+    
+    # Indexes for better performance
+    __table_args__ = (
+        Index('idx_message_chat_created', 'chat_id', 'created_at'),
+        Index('idx_message_sender_type', 'sender_type'),
+        Index('idx_message_type', 'message_type'),
+        Index('idx_message_hash', 'content_hash'),
+        Index('idx_message_emotion', 'emotion_detected'),
+        Index('idx_message_flagged', 'is_flagged'),
+        Index('idx_message_deleted', 'is_deleted'),
+    )
+    
+    def __init__(self, **kwargs):
+        """Initialize message with content hash and metadata"""
+        # Set timestamp for compatibility
+        if 'timestamp' not in kwargs:
+            kwargs['timestamp'] = datetime.now(timezone.utc)
+        
+        # Initialize metadata if not provided
+        if 'message_metadata' not in kwargs:
+            kwargs['message_metadata'] = {}
+        
+        super().__init__(**kwargs)
+        
+        # Generate content hash
+        if self.content:
+            self.generate_content_hash()
     
     def __repr__(self):
-        return f"<Message(id={self.id}, chat_id={self.chat_id}, sender_type={self.sender_type})>"
+        return f"<Message(id={self.id}, chat_id={self.chat_id}, sender='{self.sender_type.value}', type='{self.message_type.value}')>"
     
-    def get_metadata(self):
-        """Get message metadata (backward compatibility method)"""
-        return self.message_metadata
+    def __str__(self):
+        content_preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
+        return f"{self.sender_type.value}: {content_preview}"
     
-    def set_metadata(self, value):
-        """Set message metadata (backward compatibility method)"""
-        self.message_metadata = value
+    def generate_content_hash(self) -> None:
+        """Generate hash of message content for deduplication"""
+        if self.content:
+            self.content_hash = hashlib.sha256(self.content.encode('utf-8')).hexdigest()
     
-    def to_dict(self) -> dict:
-        """Convert message to dictionary"""
+    def set_emotion_data(self, sentiment_score: float, emotion: str, confidence: float) -> None:
+        """Set emotion analysis results"""
+        self.sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1, 1]
+        self.emotion_detected = emotion
+        self.confidence_score = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
+    
+    def get_metadata(self, key: str, default: Any = None) -> Any:
+        """Get metadata value"""
+        return self.message_metadata.get(key, default)
+    
+    def set_metadata(self, key: str, value: Any) -> None:
+        """Set metadata value"""
+        metadata = self.message_metadata.copy()
+        metadata[key] = value
+        self.message_metadata = metadata
+    
+    def update_metadata(self, updates: Dict[str, Any]) -> None:
+        """Update multiple metadata values"""
+        metadata = self.message_metadata.copy()
+        metadata.update(updates)
+        self.message_metadata = metadata
+    
+    def soft_delete(self) -> None:
+        """Soft delete the message"""
+        self.is_deleted = True
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def restore(self) -> None:
+        """Restore a soft-deleted message"""
+        self.is_deleted = False
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def flag(self, reason: str = None) -> None:
+        """Flag message for review"""
+        self.is_flagged = True
+        if reason:
+            self.set_metadata("flag_reason", reason)
+        self.set_metadata("flagged_at", datetime.now(timezone.utc).isoformat())
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def unflag(self) -> None:
+        """Remove flag from message"""
+        self.is_flagged = False
+        metadata = self.message_metadata.copy()
+        metadata.pop("flag_reason", None)
+        metadata.pop("flagged_at", None)
+        self.message_metadata = metadata
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def edit_content(self, new_content: str, edit_reason: str = None) -> None:
+        """Edit message content"""
+        if new_content != self.content:
+            # Store original content in metadata
+            if not self.is_edited:
+                self.set_metadata("original_content", self.content)
+                self.set_metadata("edit_history", [])
+            
+            # Add to edit history
+            edit_history = self.get_metadata("edit_history", [])
+            edit_history.append({
+                "previous_content": self.content,
+                "edited_at": datetime.now(timezone.utc).isoformat(),
+                "reason": edit_reason
+            })
+            self.set_metadata("edit_history", edit_history)
+            
+            # Update content
+            self.content = new_content
+            self.is_edited = True
+            self.generate_content_hash()
+            self.updated_at = datetime.now(timezone.utc)
+    
+    def get_emotion_summary(self) -> Dict[str, Any]:
+        """Get emotion analysis summary"""
         return {
+            "sentiment_score": self.sentiment_score,
+            "emotion_detected": self.emotion_detected,
+            "confidence_score": self.confidence_score,
+            "sentiment_label": self.get_sentiment_label(),
+            "emotion_strength": self.get_emotion_strength()
+        }
+    
+    def get_sentiment_label(self) -> str:
+        """Get human-readable sentiment label"""
+        if self.sentiment_score is None:
+            return "unknown"
+        elif self.sentiment_score > 0.1:
+            return "positive"
+        elif self.sentiment_score < -0.1:
+            return "negative"
+        else:
+            return "neutral"
+    
+    def get_emotion_strength(self) -> str:
+        """Get emotion strength label"""
+        if self.confidence_score is None:
+            return "unknown"
+        elif self.confidence_score > 0.8:
+            return "strong"
+        elif self.confidence_score > 0.6:
+            return "moderate"
+        elif self.confidence_score > 0.4:
+            return "weak"
+        else:
+            return "very_weak"
+    
+    def get_processing_info(self) -> Dict[str, Any]:
+        """Get message processing information"""
+        return {
+            "tokens_used": self.tokens_used,
+            "processing_time": self.processing_time,
+            "content_hash": self.content_hash,
+            "is_edited": self.is_edited,
+            "edit_count": len(self.get_metadata("edit_history", [])),
+            "character_count": len(self.content),
+            "word_count": len(self.content.split()),
+        }
+    
+    def to_dict(self, include_metadata: bool = False, include_emotion: bool = True) -> Dict[str, Any]:
+        """Convert message to dictionary"""
+        data = {
             "id": self.id,
             "chat_id": self.chat_id,
             "content": self.content,
-            "sender_type": self.sender_type,
-            "message_type": self.message_type,
-            "emotion_data": self.emotion_data,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
-            "metadata": self.message_metadata,  # Backward compatibility in dict output
-            "message_metadata": self.message_metadata,  # Also include new field name
+            "message_type": self.message_type.value,
+            "sender_type": self.sender_type.value,
+            "tokens_used": self.tokens_used,
+            "processing_time": self.processing_time,
             "is_edited": self.is_edited,
-            "is_favorite": self.is_favorite
+            "is_deleted": self.is_deleted,
+            "is_flagged": self.is_flagged,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }
+        
+        if include_emotion:
+            data.update({
+                "sentiment_score": self.sentiment_score,
+                "emotion_detected": self.emotion_detected,
+                "confidence_score": self.confidence_score,
+                "emotion_summary": self.get_emotion_summary(),
+            })
+        
+        if include_metadata:
+            data.update({
+                "message_metadata": self.message_metadata,
+                "content_hash": self.content_hash,
+                "processing_info": self.get_processing_info(),
+            })
+        
+        return data
+    
+    def get_context_for_ai(self) -> Dict[str, Any]:
+        """Get message data formatted for AI context"""
+        return {
+            "role": "user" if self.sender_type == SenderType.USER else "assistant",
+            "content": self.content,
+            "timestamp": self.created_at.isoformat() if self.created_at else None,
+            "emotion": self.emotion_detected,
+            "sentiment": self.get_sentiment_label(),
+        }
+    
+    def is_similar_to(self, other_message: "Message", threshold: float = 0.8) -> bool:
+        """Check if this message is similar to another message"""
+        if not other_message or not other_message.content:
+            return False
+        
+        # Simple similarity check based on content hash
+        if self.content_hash and other_message.content_hash:
+            return self.content_hash == other_message.content_hash
+        
+        # More sophisticated similarity checking could be implemented here
+        # using NLP techniques like cosine similarity of embeddings
+        return False
+    
+    def get_word_count(self) -> int:
+        """Get word count of message content"""
+        return len(self.content.split()) if self.content else 0
+    
+    def get_character_count(self) -> int:
+        """Get character count of message content"""
+        return len(self.content) if self.content else 0
+    
+    def contains_keywords(self, keywords: List[str], case_sensitive: bool = False) -> bool:
+        """Check if message contains specific keywords"""
+        if not self.content or not keywords:
+            return False
+        
+        content = self.content if case_sensitive else self.content.lower()
+        keywords = keywords if case_sensitive else [kw.lower() for kw in keywords]
+        
+        return any(keyword in content for keyword in keywords)
+    
+    def get_time_since_creation(self) -> Dict[str, Any]:
+        """Get time elapsed since message creation"""
+        if not self.created_at:
+            return {"error": "No creation time available"}
+        
+        now = datetime.now(timezone.utc)
+        diff = now - self.created_at
+        
+        return {
+            "total_seconds": diff.total_seconds(),
+            "total_minutes": diff.total_seconds() / 60,
+            "total_hours": diff.total_seconds() / 3600,
+            "total_days": diff.days,
+            "human_readable": self._format_time_diff(diff)
+        }
+    
+    def _format_time_diff(self, diff) -> str:
+        """Format time difference in human-readable format"""
+        if diff.days > 0:
+            return f"{diff.days} day{'s' if diff.days != 1 else ''} ago"
+        elif diff.seconds > 3600:
+            hours = diff.seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        elif diff.seconds > 60:
+            minutes = diff.seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        else:
+            return "Just now"
+    
+    @classmethod
+    def create_user_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
+        """Create a user message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.USER,
+            message_type=MessageType.TEXT,
+            **kwargs
+        )
+    
+    @classmethod
+    def create_assistant_message(cls, chat_id: int, content: str, tokens_used: int = 0, 
+                                processing_time: float = None, **kwargs) -> "Message":
+        """Create an assistant message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.ASSISTANT,
+            message_type=MessageType.TEXT,
+            tokens_used=tokens_used,
+            processing_time=processing_time,
+            **kwargs
+        )
+    
+    @classmethod
+    def create_system_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
+        """Create a system message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.SYSTEM,
+            message_type=MessageType.SYSTEM,
+            **kwargs
+        )

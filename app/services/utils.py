@@ -1,52 +1,56 @@
-import re
-import json
-from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
+"""
+Utility Service - Common utility functions and helpers
+2025 standards with comprehensive utility functions
+"""
+
+import asyncio
 import hashlib
+import secrets
+import string
+import re
 import logging
+from typing import List, Dict, Any, Optional, Union, Tuple
+from datetime import datetime, timezone, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+import aiofiles
+import json
+from pathlib import Path
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 class UtilsService:
-    """Utility functions for the AI chatbot"""
+    """
+    Comprehensive utility service with common functions
+    """
     
+    def __init__(self):
+        """Initialize utils service"""
+        self.password_chars = string.ascii_letters + string.digits + "!@#$%^&*"
+        logger.info("Utils service initialized")
+    
+    # String utilities
     @staticmethod
-    def clean_text(text: str) -> str:
-        """Clean and normalize text input"""
+    def clean_text(text: str, max_length: Optional[int] = None) -> str:
+        """Clean and normalize text"""
         if not text:
             return ""
         
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text.strip())
+        # Remove extra whitespace
+        cleaned = re.sub(r'\s+', ' ', text.strip())
         
-        # Remove potentially harmful characters
-        text = re.sub(r'[<>{}]', '', text)
+        # Truncate if needed
+        if max_length and len(cleaned) > max_length:
+            cleaned = cleaned[:max_length].rsplit(' ', 1)[0] + "..."
         
-        return text
-    
-    @staticmethod
-    def truncate_text(text: str, max_length: int = 4000) -> str:
-        """Truncate text to maximum length"""
-        if not text or len(text) <= max_length:
-            return text
-        
-        # Try to truncate at sentence boundary
-        truncated = text[:max_length]
-        last_period = truncated.rfind('.')
-        last_exclamation = truncated.rfind('!')
-        last_question = truncated.rfind('?')
-        
-        # Find the latest sentence ending
-        sentence_end = max(last_period, last_exclamation, last_question)
-        
-        if sentence_end > max_length * 0.7:  # If we can preserve at least 70% of content
-            return truncated[:sentence_end + 1]
-        else:
-            return truncated + "..."
+        return cleaned
     
     @staticmethod
     def extract_keywords(text: str, max_keywords: int = 10) -> List[str]:
-        """Extract keywords from text (simple implementation)"""
+        """Extract keywords from text"""
         if not text:
             return []
         
@@ -75,91 +79,82 @@ class UtilsService:
         return [word for word, freq in sorted_keywords[:max_keywords]]
     
     @staticmethod
-    def generate_chat_summary(messages: List[Dict[str, Any]]) -> str:
-        """Generate a summary of chat messages"""
-        if not messages:
-            return "No messages in chat"
+    def truncate_smartly(text: str, max_length: int) -> str:
+        """Intelligently truncate text at word boundaries"""
+        if len(text) <= max_length:
+            return text
         
-        total_messages = len(messages)
-        user_messages = [msg for msg in messages if msg.get('is_from_user', False)]
-        ai_messages = [msg for msg in messages if not msg.get('is_from_user', True)]
+        truncated = text[:max_length]
         
-        # Extract keywords from user messages
-        all_user_text = " ".join([msg.get('content', '') for msg in user_messages])
-        keywords = UtilsService.extract_keywords(all_user_text, 5)
+        # Find the last sentence ending
+        last_period = truncated.rfind('.')
+        last_exclamation = truncated.rfind('!')
+        last_question = truncated.rfind('?')
         
-        summary = f"Chat with {total_messages} messages ({len(user_messages)} from user, {len(ai_messages)} from AI)"
-        if keywords:
-            summary += f". Main topics: {', '.join(keywords)}"
+        # Find the latest sentence ending
+        sentence_end = max(last_period, last_exclamation, last_question)
         
-        return summary
+        if sentence_end > max_length * 0.7:  # Keep at least 70% of content
+            return truncated[:sentence_end + 1]
+        else:
+            # Fallback to word boundary
+            last_space = truncated.rfind(' ')
+            if last_space > max_length * 0.5:
+                return truncated[:last_space] + "..."
+            else:
+                return truncated + "..."
+    
+    # Security utilities
+    @staticmethod
+    def generate_secure_token(length: int = 32) -> str:
+        """Generate cryptographically secure random token"""
+        return secrets.token_urlsafe(length)
     
     @staticmethod
-    def calculate_reading_time(text: str, words_per_minute: int = 200) -> int:
-        """Calculate estimated reading time in seconds"""
-        if not text:
-            return 0
-        
-        word_count = len(text.split())
-        reading_time_minutes = word_count / words_per_minute
-        return max(1, int(reading_time_minutes * 60))  # At least 1 second
+    def generate_password(length: int = 12) -> str:
+        """Generate secure random password"""
+        utils = UtilsService()
+        return ''.join(secrets.choice(utils.password_chars) for _ in range(length))
     
     @staticmethod
-    def format_response_for_mobile(response: str, max_length: int = 2000) -> Dict[str, Any]:
-        """Format AI response for mobile display"""
-        # Truncate if too long
-        formatted_response = UtilsService.truncate_text(response, max_length)
-        
-        # Calculate metrics
-        word_count = len(formatted_response.split())
-        char_count = len(formatted_response)
-        reading_time = UtilsService.calculate_reading_time(formatted_response)
-        
-        # Check if response was truncated
-        was_truncated = len(response) != len(formatted_response)
-        
-        return {
-            "text": formatted_response,
-            "metadata": {
-                "word_count": word_count,
-                "character_count": char_count,
-                "reading_time_seconds": reading_time,
-                "was_truncated": was_truncated,
-                "original_length": len(response) if was_truncated else char_count
-            }
-        }
+    def hash_string(text: str, algorithm: str = "sha256") -> str:
+        """Hash string using specified algorithm"""
+        if algorithm == "sha256":
+            return hashlib.sha256(text.encode()).hexdigest()
+        elif algorithm == "md5":
+            return hashlib.md5(text.encode()).hexdigest()
+        else:
+            raise ValueError(f"Unsupported hash algorithm: {algorithm}")
+    
+    # Date/time utilities
+    @staticmethod
+    def format_datetime(dt: datetime, format_type: str = "iso") -> str:
+        """Format datetime in various formats"""
+        if format_type == "iso":
+            return dt.isoformat()
+        elif format_type == "human":
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        elif format_type == "date_only":
+            return dt.strftime("%Y-%m-%d")
+        elif format_type == "time_only":
+            return dt.strftime("%H:%M:%S")
+        else:
+            return str(dt)
     
     @staticmethod
-    def sanitize_json_string(data: str) -> Optional[Dict]:
-        """Safely parse JSON string with error handling"""
-        if not data:
-            return None
+    def time_ago(dt: datetime) -> str:
+        """Get human-readable time difference"""
+        now = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         
-        try:
-            return json.loads(data)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON: {e}")
-            return None
-    
-    @staticmethod
-    def generate_conversation_hash(messages: List[str]) -> str:
-        """Generate a hash for conversation messages (for caching/deduplication)"""
-        if not messages:
-            return ""
+        diff = now - dt
         
-        # Create a string from all messages
-        conversation_string = "|".join(messages)
-        
-        # Generate SHA256 hash
-        return hashlib.sha256(conversation_string.encode()).hexdigest()[:16]
-    
-    @staticmethod
-    def time_ago(timestamp: datetime) -> str:
-        """Convert timestamp to human-readable 'time ago' format"""
-        now = datetime.utcnow()
-        diff = now - timestamp
-        
-        if diff.days > 0:
+        if diff.days > 365:
+            return f"{diff.days // 365} year{'s' if diff.days // 365 != 1 else ''} ago"
+        elif diff.days > 30:
+            return f"{diff.days // 30} month{'s' if diff.days // 30 != 1 else ''} ago"
+        elif diff.days > 0:
             return f"{diff.days} day{'s' if diff.days != 1 else ''} ago"
         elif diff.seconds > 3600:
             hours = diff.seconds // 3600
@@ -170,34 +165,210 @@ class UtilsService:
         else:
             return "Just now"
     
+    # Data validation utilities
     @staticmethod
-    def validate_message_content(content: str) -> Dict[str, Any]:
-        """Validate message content and return validation result"""
-        result = {
-            "is_valid": True,
-            "errors": [],
-            "warnings": []
+    def validate_email(email: str) -> bool:
+        """Validate email format"""
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return re.match(pattern, email) is not None
+    
+    @staticmethod
+    def validate_url(url: str) -> bool:
+        """Validate URL format"""
+        pattern = r'^https?://(?:[-\w.])+(?:\:[0-9]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.]*))?(?:\#(?:[\w.]*))?)?$'
+        return re.match(pattern, url) is not None
+    
+    @staticmethod
+    def sanitize_filename(filename: str) -> str:
+        """Sanitize filename for safe storage"""
+        # Remove or replace unsafe characters
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        filename = filename.strip('. ')
+        
+        # Limit length
+        if len(filename) > 255:
+            name, ext = filename.rsplit('.', 1) if '.' in filename else (filename, '')
+            max_name_length = 255 - len(ext) - 1 if ext else 255
+            filename = name[:max_name_length] + ('.' + ext if ext else '')
+        
+        return filename
+    
+    # File utilities
+    @staticmethod
+    async def read_json_file(file_path: str) -> Dict[str, Any]:
+        """Read JSON file asynchronously"""
+        try:
+            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                content = await f.read()
+                return json.loads(content)
+        except Exception as e:
+            logger.error(f"Failed to read JSON file {file_path}: {str(e)}")
+            return {}
+    
+    @staticmethod
+    async def write_json_file(file_path: str, data: Dict[str, Any]) -> bool:
+        """Write JSON file asynchronously"""
+        try:
+            # Ensure directory exists
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            
+            async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, indent=2, default=str))
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write JSON file {file_path}: {str(e)}")
+            return False
+    
+    @staticmethod
+    def get_file_size_human(size_bytes: int) -> str:
+        """Convert file size to human readable format"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        i = 0
+        while size_bytes >= 1024 and i < len(size_names) - 1:
+            size_bytes /= 1024.0
+            i += 1
+        
+        return f"{size_bytes:.1f} {size_names[i]}"
+    
+    # Data processing utilities
+    @staticmethod
+    def paginate_list(items: List[Any], page: int, page_size: int) -> Tuple[List[Any], Dict[str, Any]]:
+        """Paginate a list of items"""
+        total_items = len(items)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        
+        paginated_items = items[start_index:end_index]
+        
+        pagination_info = {
+            "total_items": total_items,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_items + page_size - 1) // page_size,
+            "has_next": end_index < total_items,
+            "has_previous": page > 1,
+            "start_index": start_index + 1 if paginated_items else 0,
+            "end_index": min(end_index, total_items)
         }
         
-        if not content or not content.strip():
-            result["is_valid"] = False
-            result["errors"].append("Message content cannot be empty")
-            return result
+        return paginated_items, pagination_info
+    
+    @staticmethod
+    def deep_merge_dicts(dict1: Dict[str, Any], dict2: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep merge two dictionaries"""
+        result = dict1.copy()
         
-        # Check length
-        if len(content) > 4000:
-            result["warnings"].append("Message is very long and may be truncated")
-        
-        # Check for potential spam patterns
-        if len(set(content.split())) < len(content.split()) * 0.3:  # Too much repetition
-            result["warnings"].append("Message contains repetitive content")
-        
-        # Check for excessive special characters
-        special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s]', content)) / len(content)
-        if special_char_ratio > 0.3:
-            result["warnings"].append("Message contains many special characters")
+        for key, value in dict2.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = UtilsService.deep_merge_dicts(result[key], value)
+            else:
+                result[key] = value
         
         return result
+    
+    # Email utilities
+    async def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        html_body: Optional[str] = None,
+        from_email: Optional[str] = None
+    ) -> bool:
+        """Send email using SMTP"""
+        
+        if not settings.SMTP_HOST:
+            logger.warning("SMTP not configured, cannot send email")
+            return False
+        
+        try:
+            from_email = from_email or settings.FROM_EMAIL
+            if not from_email:
+                logger.error("No from_email specified and FROM_EMAIL not configured")
+                return False
+            
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = from_email
+            msg['To'] = to_email
+            
+            # Add text part
+            text_part = MIMEText(body, 'plain')
+            msg.attach(text_part)
+            
+            # Add HTML part if provided
+            if html_body:
+                html_part = MIMEText(html_body, 'html')
+                msg.attach(html_part)
+            
+            # Send email
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+                if settings.SMTP_USE_TLS:
+                    server.starttls()
+                
+                if settings.SMTP_USERNAME:
+                    password = settings.get_smtp_password()
+                    if password:
+                        server.login(settings.SMTP_USERNAME, password)
+                
+                server.send_message(msg)
+            
+            logger.info(f"Email sent successfully to {to_email}")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            return False
+    
+    # Performance utilities
+    @staticmethod
+    def measure_time(func):
+        """Decorator to measure function execution time"""
+        async def async_wrapper(*args, **kwargs):
+            start_time = datetime.now(timezone.utc)
+            try:
+                result = await func(*args, **kwargs)
+                execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.debug(f"Function {func.__name__} executed in {execution_time:.3f}s")
+                return result
+            except Exception as e:
+                execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.error(f"Function {func.__name__} failed after {execution_time:.3f}s: {str(e)}")
+                raise
+        
+        def sync_wrapper(*args, **kwargs):
+            start_time = datetime.now(timezone.utc)
+            try:
+                result = func(*args, **kwargs)
+                execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.debug(f"Function {func.__name__} executed in {execution_time:.3f}s")
+                return result
+            except Exception as e:
+                execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                logger.error(f"Function {func.__name__} failed after {execution_time:.3f}s: {str(e)}")
+                raise
+        
+        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+    
+    # Configuration utilities
+    @staticmethod
+    def get_config_value(key: str, default: Any = None) -> Any:
+        """Get configuration value with fallback"""
+        return getattr(settings, key, default)
+    
+    @staticmethod
+    def is_production() -> bool:
+        """Check if running in production"""
+        return settings.ENVIRONMENT.lower() == "production"
+    
+    @staticmethod
+    def is_development() -> bool:
+        """Check if running in development"""
+        return settings.ENVIRONMENT.lower() == "development"
 
-# Global service instance
+# Create global service instance
 utils_service = UtilsService()

@@ -1,77 +1,176 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field, validator
-from typing import List, Optional
-import os
+"""
+Configuration Management for AI Chatbot Backend
+Pydantic Settings and comprehensive validation
+"""
 
-class Settings(BaseSettings):
+from pydantic import BaseModel, validator, SecretStr, AnyHttpUrl
+from typing import List, Optional, Union
+import os
+from dotenv import load_dotenv
+from functools import lru_cache
+
+# Load .env file explicitly
+load_dotenv()
+
+class Settings(BaseModel):
     """
-    Application settings using Pydantic Settings (modern approach)
+    Application settings with comprehensive validation and defaults
     """
-    # Application Configuration
-    APP_NAME: str = Field(default="AI Chatbot Backend", description="Application name")
-    VERSION: str = Field(default="1.0.0", description="Application version")
-    ENVIRONMENT: str = Field(default="development", description="Environment (development/production)")
-    DEBUG: bool = Field(default=True, description="Debug mode")
     
-    # Database Configuration
-    DATABASE_URL: str = Field(..., description="PostgreSQL database URL")
-    POSTGRES_USER: str = Field(..., description="PostgreSQL username")
-    POSTGRES_PASSWORD: str = Field(..., description="PostgreSQL password")
-    POSTGRES_DB: str = Field(..., description="PostgreSQL database name")
+    # Application Settings
+    APP_NAME: str = "AI Chatbot Backend"
+    APP_VERSION: str = "2.0.0"
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = False
+    LOG_LEVEL: str = "INFO"
     
-    # Redis Configuration
-    REDIS_URL: str = Field(..., description="Redis connection URL")
-    REDIS_HOST: str = Field(default="localhost", description="Redis host")
-    REDIS_PORT: int = Field(default=6379, description="Redis port")
+    # Server Settings
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    RELOAD: bool = True
+    WORKERS: int = 1
     
-    # OpenAI Configuration
-    OPENAI_API_KEY: str = Field(..., description="OpenAI API key")
-    OPENAI_MODEL: str = Field(default="gpt-3.5-turbo", description="Default OpenAI model")
-    OPENAI_TEMPERATURE: float = Field(default=0.7, ge=0.0, le=2.0, description="OpenAI temperature")
-    OPENAI_MAX_TOKENS: int = Field(default=1000, ge=1, le=4000, description="Max tokens for OpenAI")
-    EMBEDDINGS_MODEL: str = Field(default="text-embedding-ada-002", description="Embeddings model")
+    # Security Settings
+    SECRET_KEY: SecretStr = SecretStr(os.getenv("SECRET_KEY", "your-super-secret-key-change-in-production"))
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    PASSWORD_MIN_LENGTH: int = 8
+    ALLOWED_HOSTS: List[str] = ["*"]
     
-    # Security Configuration
-    SECRET_KEY: str = Field(..., min_length=32, description="Secret key for JWT tokens")
-    ALGORITHM: str = Field(default="HS256", description="JWT algorithm (deprecated, use JWT_ALGORITHM)")
-    JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, ge=1, description="Token expiration in minutes")
+    # CORS Settings
+    FRONTEND_URL: Optional[AnyHttpUrl] = None
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
     
-    # CORS Configuration
-    CORS_ORIGINS: str = Field(
-        default="http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000",
-        description="Allowed CORS origins (comma-separated)"
-    )
+    # Database Settings
+    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/chatbot_db"
+    DATABASE_ECHO: bool = False
+    DATABASE_POOL_SIZE: int = 10
+    DATABASE_MAX_OVERFLOW: int = 20
+    DATABASE_POOL_TIMEOUT: int = 30
+    DATABASE_POOL_RECYCLE: int = 3600
     
-    # Computed properties
-    @property
-    def ALLOWED_ORIGINS(self) -> List[str]:
-        """Parse CORS origins from string to list"""
-        if self.CORS_ORIGINS == "*":
-            return ["*"]
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+    # Redis Settings
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_DB: int = 0
+    REDIS_MAX_CONNECTIONS: int = 10
+    REDIS_RETRY_ON_TIMEOUT: bool = True
+    REDIS_SOCKET_TIMEOUT: int = 5
+    REDIS_CONNECTION_TIMEOUT: int = 5
+    
+    # OpenAI Settings
+    OPENAI_API_KEY: SecretStr = SecretStr(os.getenv("OPENAI_API_KEY", "your-openai-api-key"))
+    OPENAI_MODEL: str = "gpt-3.5-turbo"
+    OPENAI_TEMPERATURE: float = 0.7
+    OPENAI_MAX_TOKENS: int = 1000
+    OPENAI_TOP_P: float = 1.0
+    OPENAI_FREQUENCY_PENALTY: float = 0.0
+    OPENAI_PRESENCE_PENALTY: float = 0.0
+    OPENAI_TIMEOUT: int = 30
+    OPENAI_MAX_RETRIES: int = 3
+    
+    # Embeddings Settings
+    EMBEDDINGS_MODEL: str = "text-embedding-ada-002"
+    EMBEDDINGS_DIMENSION: int = 1536
+    
+    # Conversation Settings
+    MAX_CONVERSATION_LENGTH: int = 50
+    MAX_MESSAGE_LENGTH: int = 4000
+    CONVERSATION_CONTEXT_WINDOW: int = 10
+    DEFAULT_SYSTEM_PROMPT: str = "You are a helpful AI assistant."
+    
+    # Rate Limiting Settings
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_REQUESTS: int = 100
+    RATE_LIMIT_WINDOW: int = 60  # seconds
+    RATE_LIMIT_STORAGE: str = "redis"
+    
+    # File Upload Settings
+    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+    ALLOWED_FILE_TYPES: List[str] = [".txt", ".pdf", ".docx", ".md"]
+    UPLOAD_DIR: str = "uploads"
+    
+    # Monitoring Settings
+    ENABLE_METRICS: bool = True
+    METRICS_ENDPOINT: str = "/metrics"
+    HEALTH_CHECK_INTERVAL: int = 30
+    
+    # WebSocket Settings
+    WEBSOCKET_TIMEOUT: int = 600  # 10 minutes
+    WEBSOCKET_MAX_SIZE: int = 1024 * 1024  # 1MB
+    WEBSOCKET_PING_INTERVAL: int = 30
+    WEBSOCKET_PING_TIMEOUT: int = 10
+    
+    # Emotion Analysis Settings
+    EMOTION_ANALYSIS_ENABLED: bool = True
+    EMOTION_CONFIDENCE_THRESHOLD: float = 0.6
+    EMOTION_MODELS: List[str] = ["vader", "textblob"]
+    
+    # Personalization Settings
+    PERSONALIZATION_ENABLED: bool = True
+    PERSONALIZATION_CACHE_TTL: int = 3600  # 1 hour
+    MIN_INTERACTIONS_FOR_PERSONALIZATION: int = 5
+    
+    # Background Tasks Settings
+    ENABLE_BACKGROUND_TASKS: bool = True
+    TASK_QUEUE_NAME: str = "chatbot_tasks"
+    CELERY_BROKER_URL: Optional[str] = None
+    CELERY_RESULT_BACKEND: Optional[str] = None
+    
+    # Caching Settings
+    CACHE_ENABLED: bool = True
+    CACHE_DEFAULT_TTL: int = 300  # 5 minutes
+    CACHE_MAX_SIZE: int = 1000
+    
+    # Email Settings (for notifications)
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[SecretStr] = None
+    SMTP_USE_TLS: bool = True
+    FROM_EMAIL: Optional[str] = None
+    
+    # Testing Settings
+    TESTING: bool = False
+    TEST_DATABASE_URL: Optional[str] = None
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = True
+        # Allow extra fields for forward compatibility
+        extra = "ignore"
     
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
-        """Validate environment value"""
-        allowed = ["development", "staging", "production"]
-        if v not in allowed:
-            raise ValueError(f"Environment must be one of: {allowed}")
+        """Validate environment setting"""
+        allowed_envs = ["development", "staging", "production", "testing"]
+        if v not in allowed_envs:
+            raise ValueError(f"Environment must be one of: {allowed_envs}")
         return v
     
-    @validator("DEBUG")
-    def set_debug_from_environment(cls, v, values):
-        """Set debug mode based on environment"""
-        env = values.get("ENVIRONMENT", "development")
-        if env == "production":
-            return False
+    @validator("LOG_LEVEL")
+    def validate_log_level(cls, v):
+        """Validate log level"""
+        allowed_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if v.upper() not in allowed_levels:
+            raise ValueError(f"Log level must be one of: {allowed_levels}")
+        return v.upper()
+    
+    @validator("SECRET_KEY")
+    def validate_secret_key(cls, v):
+        """Validate secret key strength"""
+        secret = v.get_secret_value() if hasattr(v, 'get_secret_value') else v
+        if len(secret) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long")
         return v
     
     @validator("DATABASE_URL")
     def validate_database_url(cls, v):
         """Validate database URL format"""
-        if not v.startswith(("postgresql://", "postgresql+psycopg2://")):
-            raise ValueError("DATABASE_URL must start with postgresql:// or postgresql+psycopg2://")
+        if not v.startswith(("postgresql://", "postgresql+asyncpg://", "sqlite:///")):
+            raise ValueError("DATABASE_URL must be a valid PostgreSQL or SQLite URL")
         return v
     
     @validator("REDIS_URL")
@@ -81,111 +180,144 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_URL must start with redis://")
         return v
     
-    @validator("OPENAI_API_KEY")
-    def validate_openai_key(cls, v):
-        """Validate OpenAI API key format"""
-        if not v.startswith("sk-"):
-            raise ValueError("OPENAI_API_KEY must start with sk-")
+    @validator("OPENAI_TEMPERATURE")
+    def validate_temperature(cls, v):
+        """Validate OpenAI temperature range"""
+        if not 0.0 <= v <= 2.0:
+            raise ValueError("OPENAI_TEMPERATURE must be between 0.0 and 2.0")
         return v
     
-    # Additional computed properties for convenience
+    @validator("OPENAI_TOP_P")
+    def validate_top_p(cls, v):
+        """Validate OpenAI top_p range"""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("OPENAI_TOP_P must be between 0.0 and 1.0")
+        return v
+    
+    @validator("OPENAI_FREQUENCY_PENALTY", "OPENAI_PRESENCE_PENALTY")
+    def validate_penalties(cls, v):
+        """Validate OpenAI penalty range"""
+        if not -2.0 <= v <= 2.0:
+            raise ValueError("OpenAI penalties must be between -2.0 and 2.0")
+        return v
+    
+    @validator("MAX_FILE_SIZE")
+    def validate_file_size(cls, v):
+        """Validate max file size (in bytes)"""
+        if v <= 0:
+            raise ValueError("MAX_FILE_SIZE must be positive")
+        if v > 100 * 1024 * 1024:  # 100MB
+            raise ValueError("MAX_FILE_SIZE cannot exceed 100MB")
+        return v
+    
+    @validator("CORS_ORIGINS", pre=True)
+    def validate_cors_origins(cls, v):
+        """Validate CORS origins"""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
+        return v
+    
+    @validator("ALLOWED_HOSTS", pre=True)
+    def validate_allowed_hosts(cls, v):
+        """Validate allowed hosts"""
+        if isinstance(v, str):
+            return [host.strip() for host in v.split(",")]
+        return v
+    
     @property
-    def IS_DEVELOPMENT(self) -> bool:
+    def is_development(self) -> bool:
+        """Check if running in development mode"""
         return self.ENVIRONMENT == "development"
     
     @property
-    def IS_PRODUCTION(self) -> bool:
+    def is_production(self) -> bool:
+        """Check if running in production mode"""
         return self.ENVIRONMENT == "production"
     
     @property
-    def DATABASE_CONFIG(self) -> dict:
-        """Get database configuration dictionary"""
-        return {
-            "url": self.DATABASE_URL,
-            "user": self.POSTGRES_USER,
-            "password": self.POSTGRES_PASSWORD,
-            "database": self.POSTGRES_DB,
-            "echo": self.DEBUG
-        }
+    def is_testing(self) -> bool:
+        """Check if running in testing mode"""
+        return self.ENVIRONMENT == "testing" or self.TESTING
     
     @property
-    def REDIS_CONFIG(self) -> dict:
-        """Get Redis configuration dictionary"""
-        return {
-            "url": self.REDIS_URL,
-            "host": self.REDIS_HOST,
-            "port": self.REDIS_PORT,
-            "decode_responses": True
-        }
+    def database_url_sync(self) -> str:
+        """Get synchronous database URL for Alembic"""
+        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
     
     @property
-    def OPENAI_CONFIG(self) -> dict:
-        """Get OpenAI configuration dictionary"""
-        return {
-            "api_key": self.OPENAI_API_KEY,
-            "model": self.OPENAI_MODEL,
-            "temperature": self.OPENAI_TEMPERATURE,
-            "max_tokens": self.OPENAI_MAX_TOKENS,
-            "embeddings_model": self.EMBEDDINGS_MODEL
-        }
+    def effective_database_url(self) -> str:
+        """Get effective database URL (test DB if testing)"""
+        if self.is_testing and self.TEST_DATABASE_URL:
+            return self.TEST_DATABASE_URL
+        return self.DATABASE_URL
     
-    @property
-    def JWT_CONFIG(self) -> dict:
-        """Get JWT configuration dictionary"""
-        return {
-            "secret_key": self.SECRET_KEY,
-            "algorithm": self.JWT_ALGORITHM,
-            "expire_minutes": self.ACCESS_TOKEN_EXPIRE_MINUTES
-        }
+    def get_openai_api_key(self) -> str:
+        """Get OpenAI API key as string"""
+        return self.OPENAI_API_KEY.get_secret_value()
+    
+    def get_secret_key(self) -> str:
+        """Get secret key as string"""
+        return self.SECRET_KEY.get_secret_value()
+    
+    def get_smtp_password(self) -> Optional[str]:
+        """Get SMTP password as string"""
+        if self.SMTP_PASSWORD:
+            return self.SMTP_PASSWORD.get_secret_value()
+        return None
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
-        validate_assignment = True
+# Environment-specific settings classes
+class DevelopmentSettings(Settings):
+    """Development environment settings"""
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = True
+    LOG_LEVEL: str = "DEBUG"
+    DATABASE_ECHO: bool = True
+    RELOAD: bool = True
+    RATE_LIMIT_ENABLED: bool = False
 
-# Create global settings instance
-settings = Settings()
+class ProductionSettings(Settings):
+    """Production environment settings"""
+    ENVIRONMENT: str = "production"
+    DEBUG: bool = False
+    LOG_LEVEL: str = "INFO"
+    DATABASE_ECHO: bool = False
+    RELOAD: bool = False
+    ALLOWED_HOSTS: List[str] = []  # Must be set in production
+    RATE_LIMIT_ENABLED: bool = True
 
-# Logging configuration
-LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        },
-        "detailed": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s - %(funcName)s - %(message)s",
-        },
-    },
-    "handlers": {
-        "default": {
-            "formatter": "default",
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stdout",
-        },
-        "file": {
-            "formatter": "detailed",
-            "class": "logging.FileHandler",
-            "filename": "app.log",
-            "mode": "a",
-        },
-    },
-    "root": {
-        "level": "DEBUG" if settings.DEBUG else "INFO",
-        "handlers": ["default", "file"],
-    },
-    "loggers": {
-        "uvicorn": {
-            "level": "INFO",
-            "handlers": ["default"],
-            "propagate": False,
-        },
-        "sqlalchemy.engine": {
-            "level": "INFO" if settings.DEBUG else "WARNING",
-            "handlers": ["default"],
-            "propagate": False,
-        },
-    },
-}
+class TestingSettings(Settings):
+    """Testing environment settings"""
+    ENVIRONMENT: str = "testing"
+    TESTING: bool = True
+    LOG_LEVEL: str = "WARNING"
+    DATABASE_ECHO: bool = False
+    RATE_LIMIT_ENABLED: bool = False
+    PERSONALIZATION_ENABLED: bool = False
+
+@lru_cache()
+def get_settings() -> Settings:
+    """
+    Get settings instance with caching
+    Factory function that returns appropriate settings based on environment
+    """
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    
+    if env == "production":
+        return ProductionSettings()
+    elif env == "testing":
+        return TestingSettings()
+    else:
+        return DevelopmentSettings()
+
+# Global settings instance
+settings = get_settings()
+
+# Export commonly used settings
+__all__ = [
+    "Settings",
+    "DevelopmentSettings", 
+    "ProductionSettings",
+    "TestingSettings",
+    "get_settings",
+    "settings"
+]
