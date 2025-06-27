@@ -8,13 +8,14 @@ from sqlalchemy.sql import func
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import uuid
+import json
 
 from app.database import Base
 
 class Chat(Base):
     """
     Chat model representing conversation sessions
-    FIXED: Renamed 'metadata' to 'chat_metadata' to avoid SQLAlchemy conflict
+    FIXED: Renamed column to 'chat_metadata' to match code expectations
     """
     __tablename__ = "chats"
     
@@ -24,7 +25,7 @@ class Chat(Base):
     # Foreign key to user
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
-    # Chat metadata - FIXED: renamed from metadata to chat_metadata
+    # Chat metadata
     title = Column(String(200), nullable=False, default="New Chat")
     description = Column(Text, nullable=True)
     
@@ -46,8 +47,8 @@ class Chat(Base):
     total_user_messages = Column(Integer, default=0, nullable=False)
     total_ai_messages = Column(Integer, default=0, nullable=False)
     
-    # Chat settings - FIXED: renamed from metadata to chat_metadata
-    chat_chat_metadata = Column(JSON, default=dict, nullable=False)
+    # Chat settings - FIXED: Changed from chat_chat_metadata to chat_metadata
+    chat_metadata = Column(JSON, default=dict, nullable=False)
     
     # Chat context and preferences
     context_window_size = Column(Integer, default=10, nullable=False)
@@ -158,6 +159,10 @@ class Chat(Base):
         self.title = new_title[:200]  # Ensure max length
         self.updated_at = datetime.now(timezone.utc)
     
+    def update_activity(self) -> None:
+        """Update last activity timestamp"""
+        self.updated_at = datetime.now(timezone.utc)
+    
     def get_summary(self) -> Dict[str, Any]:
         """Get chat summary"""
         return {
@@ -171,6 +176,158 @@ class Chat(Base):
             "is_archived": self.is_archived,
             "is_favorite": self.is_favorite
         }
+    
+    def get_conversation_summary(self) -> Dict[str, Any]:
+        """Get detailed conversation summary and statistics"""
+        return {
+            "chat_id": self.id,
+            "title": self.title,
+            "total_messages": self.total_messages,
+            "user_messages": self.total_user_messages,
+            "ai_messages": self.total_ai_messages,
+            "total_tokens_used": self.total_tokens_used,
+            "ai_model": self.ai_model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+            "session_duration": self._calculate_session_duration(),
+            "is_active": self.is_active,
+            "is_archived": self.is_archived,
+            "is_favorite": self.is_favorite,
+            "context_window_size": self.context_window_size,
+            "auto_title_generation": self.auto_title_generation
+        }
+    
+    def _calculate_session_duration(self) -> Optional[float]:
+        """Calculate session duration in minutes"""
+        if not self.created_at or not self.last_message_at:
+            return None
+        
+        duration = self.last_message_at - self.created_at
+        return duration.total_seconds() / 60  # Return in minutes
+    
+    def export_conversation(self, format: str = "json") -> Dict[str, Any]:
+        """Export conversation in various formats"""
+        try:
+            if format.lower() not in ["json", "markdown", "txt"]:
+                return {"error": "Unsupported export format. Use 'json', 'markdown', or 'txt'"}
+            
+            # Get basic chat info
+            export_data = {
+                "chat_info": {
+                    "id": self.id,
+                    "title": self.title,
+                    "description": self.description,
+                    "ai_model": self.ai_model,
+                    "total_messages": self.total_messages,
+                    "total_tokens_used": self.total_tokens_used,
+                    "created_at": self.created_at.isoformat() if self.created_at else None,
+                    "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None
+                },
+                "messages": []
+            }
+            
+            # Add messages if available
+            if hasattr(self, 'messages') and self.messages:
+                for message in self.messages:
+                    if not message.is_deleted:
+                        message_data = {
+                            "id": message.id,
+                            "content": message.content,
+                            "sender_type": message.sender_type.value if hasattr(message.sender_type, 'value') else str(message.sender_type),
+                            "message_type": message.message_type.value if hasattr(message.message_type, 'value') else str(message.message_type),
+                            "timestamp": message.created_at.isoformat() if message.created_at else None,
+                            "tokens_used": message.tokens_used,
+                            "processing_time": message.processing_time,
+                            "emotion_detected": message.emotion_detected,
+                            "sentiment_score": message.sentiment_score
+                        }
+                        export_data["messages"].append(message_data)
+            
+            if format.lower() == "json":
+                return {
+                    "success": True,
+                    "format": "json",
+                    "data": export_data,
+                    "exported_at": datetime.now(timezone.utc).isoformat()
+                }
+            
+            elif format.lower() == "markdown":
+                markdown_content = self._format_as_markdown(export_data)
+                return {
+                    "success": True,
+                    "format": "markdown",
+                    "content": markdown_content,
+                    "exported_at": datetime.now(timezone.utc).isoformat()
+                }
+            
+            elif format.lower() == "txt":
+                txt_content = self._format_as_text(export_data)
+                return {
+                    "success": True,
+                    "format": "txt",
+                    "content": txt_content,
+                    "exported_at": datetime.now(timezone.utc).isoformat()
+                }
+        
+        except Exception as e:
+            return {"error": f"Export failed: {str(e)}"}
+    
+    def _format_as_markdown(self, data: Dict[str, Any]) -> str:
+        """Format conversation as Markdown"""
+        markdown = f"# {data['chat_info']['title']}\n\n"
+        markdown += f"**Chat ID:** {data['chat_info']['id']}\n"
+        markdown += f"**AI Model:** {data['chat_info']['ai_model']}\n"
+        markdown += f"**Created:** {data['chat_info']['created_at']}\n"
+        markdown += f"**Total Messages:** {data['chat_info']['total_messages']}\n"
+        markdown += f"**Total Tokens:** {data['chat_info']['total_tokens_used']}\n\n"
+        
+        if data['chat_info']['description']:
+            markdown += f"**Description:** {data['chat_info']['description']}\n\n"
+        
+        markdown += "## Conversation\n\n"
+        
+        for message in data['messages']:
+            sender = "🤖 **Assistant**" if message['sender_type'] == "assistant" else "👤 **User**"
+            markdown += f"### {sender}\n"
+            markdown += f"*{message['timestamp']}*\n\n"
+            markdown += f"{message['content']}\n\n"
+            
+            if message['emotion_detected']:
+                markdown += f"*Emotion: {message['emotion_detected']}*\n\n"
+            
+            markdown += "---\n\n"
+        
+        return markdown
+    
+    def _format_as_text(self, data: Dict[str, Any]) -> str:
+        """Format conversation as plain text"""
+        text = f"Chat: {data['chat_info']['title']}\n"
+        text += f"=" * len(f"Chat: {data['chat_info']['title']}") + "\n\n"
+        text += f"Chat ID: {data['chat_info']['id']}\n"
+        text += f"AI Model: {data['chat_info']['ai_model']}\n"
+        text += f"Created: {data['chat_info']['created_at']}\n"
+        text += f"Total Messages: {data['chat_info']['total_messages']}\n"
+        text += f"Total Tokens: {data['chat_info']['total_tokens_used']}\n\n"
+        
+        if data['chat_info']['description']:
+            text += f"Description: {data['chat_info']['description']}\n\n"
+        
+        text += "CONVERSATION:\n"
+        text += "-" * 50 + "\n\n"
+        
+        for message in data['messages']:
+            sender = "ASSISTANT" if message['sender_type'] == "assistant" else "USER"
+            text += f"[{sender}] {message['timestamp']}\n"
+            text += f"{message['content']}\n"
+            
+            if message['emotion_detected']:
+                text += f"(Emotion: {message['emotion_detected']})\n"
+            
+            text += "\n" + "-" * 30 + "\n\n"
+        
+        return text
     
     def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
         """Convert chat to dictionary"""
@@ -203,3 +360,13 @@ class Chat(Base):
             data["chat_metadata"] = self.chat_metadata
         
         return data
+
+    @property
+    def last_activity_at(self):
+        """Get last activity timestamp (returns updated_at or created_at)"""
+        return self.updated_at or self.created_at
+    
+    def update_activity(self):
+        """Update the last activity timestamp"""
+        from datetime import datetime, timezone
+        self.updated_at = datetime.now(timezone.utc)

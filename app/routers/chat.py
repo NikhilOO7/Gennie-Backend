@@ -190,7 +190,7 @@ async def get_user_chats(
     include_archived: bool = Query(False, description="Include archived chats"),
     include_deleted: bool = Query(False, description="Include soft-deleted chats"),
     search: Optional[str] = Query(None, description="Search in chat titles and descriptions"),
-    sort_by: str = Query("last_activity_at", description="Sort field"),
+    sort_by: str = Query("updated_at", description="Sort field"),
     sort_order: str = Query("desc", description="Sort order (asc/desc)")
 ):
     """Get user's chats with pagination and filtering"""
@@ -222,9 +222,9 @@ async def get_user_chats(
         
         # Apply sorting
         if sort_order.lower() == "desc":
-            sort_column = desc(getattr(Chat, sort_by, Chat.last_activity_at))
+            sort_column = desc(getattr(Chat, sort_by, Chat.updated_at))
         else:
-            sort_column = getattr(Chat, sort_by, Chat.last_activity_at)
+            sort_column = getattr(Chat, sort_by, Chat.updated_at)
         
         query = query.order_by(sort_column)
         

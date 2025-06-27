@@ -180,10 +180,16 @@ async def verify_websocket_token(token: str) -> Dict[str, Any]:
 async def get_websocket_user(token: str, db: AsyncSession) -> User:
     """Get user from WebSocket token"""
     payload = await verify_websocket_token(token)
-    user_id = payload.get("sub")
+    user_id_str = payload.get("sub")
     
-    if not user_id:
+    if not user_id_str:
         raise HTTPException(status_code=401, detail="Invalid token payload")
+    
+    # FIXED: Convert string subject back to integer
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid user ID format")
     
     stmt = select(User).where(User.id == user_id)
     result = await db.execute(stmt)

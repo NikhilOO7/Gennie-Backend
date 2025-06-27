@@ -14,6 +14,7 @@ import asyncio
 from typing import AsyncGenerator, Optional
 import redis.asyncio as aioredis
 from redis.exceptions import ConnectionError as RedisConnectionError
+from fastapi import HTTPException
 
 from app.config import settings
 
@@ -114,17 +115,23 @@ async def close_redis():
 # Dependency to get database session
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    Dependency function to get database session with proper error handling
+    Dependency function to get database session with improved error handling
     """
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except HTTPException as e:
+            # Don't log HTTPExceptions as database errors - they're from auth failures
+            logger.debug(f"HTTP exception in database session: {e.status_code}: {e.detail}")
+            await session.rollback()
+            raise
         except Exception as e:
             logger.error(f"Database session error: {str(e)}")
             await session.rollback()
             raise
         finally:
             await session.close()
+
 
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:

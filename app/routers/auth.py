@@ -90,6 +90,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """Create JWT access token"""
     to_encode = data.copy()
     
+    # FIXED: Convert user ID to string for JWT compliance
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
+    
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
@@ -108,6 +112,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 def create_refresh_token(data: dict) -> str:
     """Create JWT refresh token"""
     to_encode = data.copy()
+    
+    # FIXED: Convert user ID to string for JWT compliance
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
+    
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     
@@ -152,38 +161,84 @@ async def get_current_user(
 ) -> User:
     """Get current authenticated user"""
     
-    token = credentials.credentials
-    payload = verify_token(token, "access")
+    try:
+        # Extract token
+        token = credentials.credentials
+        logger.debug(f"Received token: {token[:20]}..." if len(token) > 20 else f"Received token: {token}")
+        
+        # Verify token
+        try:
+            payload = verify_token(token, "access")
+            logger.debug(f"Token payload: {payload}")
+        except HTTPException as e:
+            logger.error(f"Token verification failed: {e.detail}")
+            raise e
+        
+        # Extract user ID and convert from string to int
+        user_id_str = payload.get("sub")
+        if user_id_str is None:
+            logger.error("Token payload missing user ID (sub)")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload - missing user ID"
+            )
+        
+        # FIXED: Convert string subject back to integer
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid user ID format in token: {user_id_str}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload - invalid user ID format"
+            )
+        
+        # Get user from database
+        try:
+            stmt = select(User).where(User.id == user_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if user is None:
+                logger.error(f"User not found in database: ID {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found"
+                )
+            
+            # Check if user is active
+            if not user.is_active:
+                logger.error(f"User account inactive: {user.username}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User account is inactive"
+                )
+            
+            # Update last activity
+            user.update_last_activity()
+            await db.commit()
+            
+            logger.debug(f"Authentication successful for user: {user.username}")
+            return user
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Database error during user lookup: {str(e)}")
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database error during authentication"
+            )
     
-    user_id: int = payload.get("sub")
-    if user_id is None:
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_current_user: {str(e)}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication system error"
         )
-    
-    # Get user from database
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-    
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is inactive"
-        )
-    
-    # Update last activity
-    user.update_last_activity()
-    await db.commit()
-    
-    return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     """Get current active user (additional validation)"""
@@ -407,12 +462,21 @@ async def refresh_token(
     try:
         # Verify refresh token
         payload = verify_token(refresh_data.refresh_token, "refresh")
-        user_id: int = payload.get("sub")
+        user_id_str = payload.get("sub")
         
-        if user_id is None:
+        if user_id_str is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
+            )
+        
+        # FIXED: Convert string subject back to integer
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user ID format"
             )
         
         # Check if refresh token exists in Redis
