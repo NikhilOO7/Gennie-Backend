@@ -170,6 +170,28 @@ class OpenAIService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "raw_response": response.model_dump() if hasattr(response, 'model_dump') else None
         }
+
+    async def create_embedding(self, text: str) -> Dict[str, Any]:
+        """Create embeddings for text using OpenAI"""
+        try:
+            response = await self.client.embeddings.create(
+                model=self.embeddings_model,  # or "text-embedding-ada-002"
+                input=text
+            )
+            
+            return {
+                "success": True,
+                "embedding": response.data[0].embedding,
+                "model": response.model,
+                "usage": response.usage.dict() if response.usage else {}
+            }
+        except Exception as e:
+            logger.error(f"Failed to create embedding: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "embedding": None
+            }
     
     async def _handle_streaming_response(
         self, 

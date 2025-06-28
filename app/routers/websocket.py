@@ -1,42 +1,41 @@
 """
-WebSocket Router - Real-time chat communication
+WebSocket Router - Real-time chat functionality
 """
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy.orm import selectinload
 from typing import Dict, List, Optional, Any
 import json
 import logging
-import asyncio
 from datetime import datetime, timezone
-import jwt
+import asyncio
+import uuid
 
 from app.database import get_db, get_redis
 from app.models.user import User
 from app.models.chat import Chat
-from app.models.message import Message, SenderType
-from app.config import settings
+from app.models.message import Message, MessageType, SenderType
 from app.services.openai_service import openai_service
 from app.services.emotion_service import emotion_service
-from app.services.personalization import personalization_service
+from app.services.rag_service import rag_service
+from app.routers.auth import verify_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class ConnectionManager:
-    """
-    Manages WebSocket connections for real-time chat
-    """
+    """Manages WebSocket connections"""
     
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
-        self.user_connections: Dict[int, List[str]] = {}  # user_id -> [connection_ids]
-        self.chat_connections: Dict[int, List[str]] = {}  # chat_id -> [connection_ids] 
+        self.user_connections: Dict[int, List[str]] = {}
+        self.chat_connections: Dict[int, List[str]] = {}
         self.connection_metadata: Dict[str, Dict[str, Any]] = {}
-        
+    
     async def connect(self, websocket: WebSocket, connection_id: str, user_id: int, chat_id: int):
-        """Accept a new WebSocket connection"""
+        """Accept and register a new connection"""
         await websocket.accept()
         
         # Store connection
@@ -56,14 +55,14 @@ class ConnectionManager:
         self.connection_metadata[connection_id] = {
             "user_id": user_id,
             "chat_id": chat_id,
-            "connected_at": datetime.now(timezone.utc),
+            "connected_at": datetime.now(timezone.utc).isoformat(),
             "last_activity": datetime.now(timezone.utc)
         }
         
         logger.info(f"WebSocket connected: {connection_id} (user: {user_id}, chat: {chat_id})")
     
     def disconnect(self, connection_id: str):
-        """Remove a WebSocket connection"""
+        """Remove a connection"""
         if connection_id not in self.active_connections:
             return
         
@@ -136,56 +135,40 @@ class ConnectionManager:
         return len(self.user_connections.get(user_id, []))
     
     def get_chat_connection_count(self, chat_id: int) -> int:
-        """Get number of connections for a chat"""
+        """Get number of connections in a chat"""
         return len(self.chat_connections.get(chat_id, []))
     
     def get_connection_info(self) -> Dict[str, Any]:
-        """Get connection statistics"""
+        """Get information about all connections"""
         return {
-            "total_connections": len(self.active_connections),
-            "unique_users": len(self.user_connections),
-            "unique_chats": len(self.chat_connections),
-            "connections_by_user": {uid: len(conns) for uid, conns in self.user_connections.items()},
-            "connections_by_chat": {cid: len(conns) for cid, conns in self.chat_connections.items()}
+            "total_connections": self.get_connection_count(),
+            "user_connections": {
+                user_id: len(connections) 
+                for user_id, connections in self.user_connections.items()
+            },
+            "chat_connections": {
+                chat_id: len(connections) 
+                for chat_id, connections in self.chat_connections.items()
+            },
+            "connection_details": self.connection_metadata
         }
 
 # Global connection manager
 manager = ConnectionManager()
 
-async def verify_websocket_token(token: str) -> Dict[str, Any]:
-    """Verify WebSocket authentication token"""
-    try:
-        payload = jwt.decode(
-            token, 
-            settings.get_secret_key(), 
-            algorithms=[settings.ALGORITHM]
-        )
-        
-        if payload.get("type") != "access":
-            raise jwt.InvalidTokenError("Invalid token type")
-        
-        return payload
-    
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=401,
-            detail="Token has expired"
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token"
-        )
-
 async def get_websocket_user(token: str, db: AsyncSession) -> User:
-    """Get user from WebSocket token"""
-    payload = await verify_websocket_token(token)
+    """Verify WebSocket token and get user"""
+    try:
+        payload = verify_token(token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    
     user_id_str = payload.get("sub")
     
     if not user_id_str:
         raise HTTPException(status_code=401, detail="Invalid token payload")
     
-    # FIXED: Convert string subject back to integer
+    # Convert string subject back to integer
     try:
         user_id = int(user_id_str)
     except (ValueError, TypeError):
@@ -246,34 +229,43 @@ async def handle_chat_message(
     db: AsyncSession,
     redis_client
 ) -> Dict[str, Any]:
-    """Handle chat message via WebSocket"""
+    """Handle chat message via WebSocket - FIXED VERSION"""
     
     content = message_data.get("content", "").strip()
+    
     if not content:
         return {
             "type": "error",
             "error": "Message content cannot be empty"
         }
     
-    if len(content) > 4000:
-        return {
-            "type": "error", 
-            "error": "Message too long (max 4000 characters)"
-        }
-    
-    start_time = datetime.now(timezone.utc)
-    
     try:
-        # Create user message
-        user_message = Message.create_user_message(
-            chat_id=chat.id,
-            content=content
-        )
-        db.add(user_message)
-        await db.commit()
-        await db.refresh(user_message)
+        start_time = datetime.now(timezone.utc)
         
-        # Send acknowledgment to sender
+        # Store chat_id and user_id to avoid lazy loading issues
+        chat_id = chat.id
+        user_id = user.id
+        chat_ai_model = chat.ai_model
+        chat_temperature = chat.temperature
+        chat_max_tokens = chat.max_tokens
+        chat_system_prompt = chat.system_prompt
+        
+        # Create user message
+        user_message = Message(
+            chat_id=chat_id,
+            content=content,
+            message_type=MessageType.TEXT,
+            sender_type=SenderType.USER,
+            message_metadata={
+                "source": "websocket",
+                "connection_id": connection_id
+            }
+        )
+        
+        db.add(user_message)
+        await db.flush()  # Get the ID without committing
+        
+        # Send immediate acknowledgment
         await manager.send_personal_message({
             "type": "message_sent",
             "message_id": user_message.id,
@@ -286,125 +278,128 @@ async def handle_chat_message(
         await manager.send_to_chat({
             "type": "user_message",
             "message_id": user_message.id,
-            "user_id": user.id,
-            "username": user.username,
+            "user_id": user_id,
             "content": content,
             "timestamp": user_message.created_at.isoformat()
-        }, chat.id, exclude_connection=connection_id)
+        }, chat_id, exclude_connection=connection_id)
         
-        # Analyze emotion if enabled
-        emotion_data = None
-        if chat.get_setting("enable_emotion_detection", True):
-            try:
-                emotion_analysis = await emotion_service.analyze_emotion(
-                    content,
-                    context={"user_id": user.id, "chat_id": chat.id}
-                )
-                
-                if emotion_analysis.get("success"):
-                    emotion_data = emotion_analysis
-                    user_message.set_emotion_data(
-                        sentiment_score=emotion_data.get("sentiment_score", 0.0),
-                        emotion=emotion_data.get("primary_emotion", "neutral"),
-                        confidence=emotion_data.get("confidence_score", 0.0)
-                    )
-            except Exception as e:
-                logger.warning(f"Emotion analysis failed: {str(e)}")
-        
-        # Get user preferences for personalization
-        user_preferences = None
-        if chat.get_setting("enable_personalization", True):
-            try:
-                user_preferences = await personalization_service.get_cached_preferences(
-                    user.id, redis_client
-                )
-            except Exception as e:
-                logger.warning(f"Failed to get user preferences: {str(e)}")
-        
-        # Build conversation context
-        conversation_messages = []
-        
-        # Add system prompt
-        system_prompt = chat.system_prompt
-        if not system_prompt and user_preferences:
-            emotion_context = {"recent_emotion": emotion_data.get("primary_emotion")} if emotion_data else None
-            system_prompt = await personalization_service.generate_personalized_system_prompt(
-                user_preferences, emotion_context
-            )
-        
-        if system_prompt:
-            conversation_messages.append({"role": "system", "content": system_prompt})
-        
-        # Add recent messages for context
-        context_messages = chat.get_context_messages()
-        for msg in context_messages:
-            if msg.sender_type == SenderType.USER:
-                conversation_messages.append({"role": "user", "content": msg.content})
-            elif msg.sender_type == SenderType.ASSISTANT:
-                conversation_messages.append({"role": "assistant", "content": msg.content})
-        
-        # Add current user message
-        conversation_messages.append({"role": "user", "content": content})
-        
-        # Send typing indicator
+        # Show AI typing indicator
         await manager.send_to_chat({
             "type": "ai_typing",
-            "chat_id": chat.id,
+            "chat_id": chat_id,
             "is_typing": True
-        }, chat.id)
+        }, chat_id)
         
-        # Generate AI response
+        # Analyze emotion
+        emotion_data = None
+        try:
+            emotion_result = await emotion_service.analyze_emotion(
+                content, 
+                context={"user_id": user_id, "chat_id": chat_id}
+            )
+            if emotion_result and emotion_result.get("success"):
+                emotion_data = emotion_result
+                user_message.emotion_detected = emotion_data.get("primary_emotion")
+                user_message.sentiment_score = emotion_data.get("sentiment_score", 0.0)
+                user_message.confidence_score = emotion_data.get("confidence_score", 0.0)
+        except Exception as e:
+            logger.warning(f"Emotion analysis failed: {str(e)}")
+        
+        # Get conversation context using RAG
+        context_messages = []
+        user_preferences = None
+        
+        try:
+            # Use RAG to get relevant context
+            rag_context = await rag_service.get_context_for_chat(
+                chat_id=chat_id,
+                user_id=user_id,
+                current_message=content,
+                db=db,
+                redis_client=redis_client
+            )
+            
+            if rag_context:
+                context_messages = rag_context.get("context_messages", [])
+                user_preferences = rag_context.get("user_preferences", {})
+        except Exception as e:
+            logger.warning(f"RAG context retrieval failed: {str(e)}")
+        
+        # Prepare messages for OpenAI
+        messages = []
+        
+        # Add system prompt if available
+        if chat_system_prompt:
+            messages.append({"role": "system", "content": chat_system_prompt})
+        
+        # Add context messages
+        for ctx_msg in context_messages[-10:]:  # Limit context
+            role = "user" if ctx_msg.get("sender_type") == "USER" else "assistant"
+            messages.append({
+                "role": role,
+                "content": ctx_msg.get("content", "")
+            })
+        
+        # Add current message
+        messages.append({"role": "user", "content": content})
+        
+        # Get AI response
         ai_response_data = await openai_service.generate_chat_response(
-            messages=conversation_messages,
-            temperature=chat.temperature,
-            max_tokens=chat.max_tokens,
-            model=chat.ai_model,
-            user_id=str(user.id)
+            messages=messages,
+            model=chat_ai_model,
+            temperature=chat_temperature,
+            max_tokens=chat_max_tokens,
+            user_id=str(user_id)
         )
         
-        if not ai_response_data.get("success"):
-            await manager.send_to_chat({
-                "type": "ai_typing",
-                "chat_id": chat.id,
-                "is_typing": False
-            }, chat.id)
-            
-            return {
-                "type": "error",
-                "error": f"AI response failed: {ai_response_data.get('error', 'Unknown error')}"
-            }
+        if not ai_response_data["success"]:
+            raise Exception(ai_response_data.get("error", "Failed to get AI response"))
         
         ai_response = ai_response_data["response"]
-        token_usage = ai_response_data["tokens_used"]
+        token_usage = ai_response_data.get("tokens_used", {})
         
         # Create AI message
-        ai_message = Message.create_assistant_message(
-            chat_id=chat.id,
+        ai_message = Message(
+            chat_id=chat_id,
             content=ai_response,
+            message_type=MessageType.TEXT,
+            sender_type=SenderType.ASSISTANT,
             tokens_used=token_usage.get("total_tokens", 0),
-            processing_time=ai_response_data["processing_time"]
+            processing_time=ai_response_data.get("processing_time", 0.0),
+            message_metadata={
+                "ai_model": chat_ai_model,
+                "websocket_response": True,
+                "user_preferences_applied": bool(user_preferences)
+            }
         )
-        
-        ai_message.set_metadata("ai_model", chat.ai_model)
-        ai_message.set_metadata("websocket_response", True)
-        if user_preferences:
-            ai_message.set_metadata("personalization_applied", True)
         
         db.add(ai_message)
         
-        # Update chat and user statistics
-        chat.update_message_stats(is_user_message=False, tokens_used=token_usage.get("total_tokens", 0))
-        user.increment_usage_stats(messages=2, tokens=token_usage.get("total_tokens", 0))
+        # Update chat statistics (avoid lazy loading by updating directly)
+        chat.total_messages += 2
+        chat.total_user_messages += 1
+        chat.total_ai_messages += 1
+        chat.total_tokens_used += token_usage.get("total_tokens", 0)
+        chat.last_message_at = datetime.now(timezone.utc)
+        chat.updated_at = datetime.now(timezone.utc)
         
+        # Update user statistics
+        user.total_messages += 2
+        user.total_tokens_used += token_usage.get("total_tokens", 0)
+        
+        # Commit all changes
         await db.commit()
+        
+        # Refresh to get updated values
+        await db.refresh(user_message)
         await db.refresh(ai_message)
         
         # Stop typing indicator
         await manager.send_to_chat({
             "type": "ai_typing",
-            "chat_id": chat.id,
+            "chat_id": chat_id,
             "is_typing": False
-        }, chat.id)
+        }, chat_id)
         
         # Send AI response to all chat participants
         await manager.send_to_chat({
@@ -413,17 +408,17 @@ async def handle_chat_message(
             "content": ai_response,
             "timestamp": ai_message.created_at.isoformat(),
             "tokens_used": token_usage.get("total_tokens", 0),
-            "processing_time": ai_response_data["processing_time"],
+            "processing_time": ai_response_data.get("processing_time", 0.0),
             "emotion_detected": emotion_data.get("primary_emotion") if emotion_data else None
-        }, chat.id)
+        }, chat_id)
         
         processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         logger.info(
             f"WebSocket chat message processed in {processing_time:.2f}s",
             extra={
-                "user_id": user.id,
-                "chat_id": chat.id,
+                "user_id": user_id,
+                "chat_id": chat_id,
                 "connection_id": connection_id,
                 "processing_time": processing_time,
                 "tokens_used": token_usage.get("total_tokens", 0)
@@ -445,9 +440,9 @@ async def handle_chat_message(
         try:
             await manager.send_to_chat({
                 "type": "ai_typing",
-                "chat_id": chat.id,
+                "chat_id": chat_id,
                 "is_typing": False
-            }, chat.id)
+            }, chat_id)
         except:
             pass
         
@@ -455,7 +450,6 @@ async def handle_chat_message(
             "type": "error",
             "error": "Failed to process chat message"
         }
-
 async def handle_typing_indicator(
     message_data: Dict[str, Any],
     connection_id: str,
@@ -509,7 +503,7 @@ async def handle_status_request(
             "title": chat.title,
             "total_messages": chat.total_messages,
             "is_active": chat.is_active,
-            "last_activity": chat.last_activity_at.isoformat() if chat.last_activity_at else None
+            "last_activity": chat.updated_at.isoformat() if chat.updated_at else None
         },
         "connection_info": {
             "connected_at": manager.connection_metadata.get(connection_id, {}).get("connected_at"),
@@ -529,6 +523,7 @@ async def websocket_chat_endpoint(
 ):
     """
     WebSocket endpoint for real-time chat
+    FIXED: Proper async session handling
     """
     connection_id = f"{chat_id}_{datetime.now().timestamp()}"
     
@@ -536,8 +531,10 @@ async def websocket_chat_endpoint(
         # Verify authentication
         user = await get_websocket_user(token, db)
         
-        # Verify chat access
-        chat_query = select(Chat).where(
+        # Verify chat access with proper loading
+        chat_query = select(Chat).options(
+            selectinload(Chat.user)  # Eagerly load relationships
+        ).where(
             and_(
                 Chat.id == chat_id,
                 Chat.user_id == user.id,
@@ -565,10 +562,14 @@ async def websocket_chat_endpoint(
             "timestamp": datetime.now(timezone.utc).isoformat()
         }, connection_id)
         
-        # Update user activity
-        user.update_last_activity()
-        chat.update_activity()
+        # Update activity (within session context)
+        user.last_activity = datetime.now(timezone.utc)
+        chat.updated_at = datetime.now(timezone.utc)
         await db.commit()
+        
+        # Refresh objects to ensure they're bound to the session
+        await db.refresh(user)
+        await db.refresh(chat)
         
         try:
             while True:
@@ -584,7 +585,7 @@ async def websocket_chat_endpoint(
                     }, connection_id)
                     continue
                 
-                # Process the message
+                # Process the message with fresh session
                 response = await process_websocket_message(
                     message_data, connection_id, user, chat, db, redis_client
                 )
@@ -592,7 +593,7 @@ async def websocket_chat_endpoint(
                 # Send response if any
                 if response:
                     await manager.send_personal_message(response, connection_id)
-                
+            
         except WebSocketDisconnect:
             logger.info(f"WebSocket disconnected normally: {connection_id}")
         except Exception as e:

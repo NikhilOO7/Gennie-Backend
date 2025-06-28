@@ -360,6 +360,58 @@ class Chat(Base):
             data["chat_metadata"] = self.chat_metadata
         
         return data
+    
+    def get_context_messages(self, limit: int = None) -> List["Message"]:
+        """Get messages for context (most recent messages)"""
+        if not hasattr(self, 'messages') or not self.messages:
+            return []
+        
+        # Filter out deleted messages
+        valid_messages = [msg for msg in self.messages if not msg.is_deleted]
+        
+        # Sort by creation time (oldest first)
+        valid_messages.sort(key=lambda x: x.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        
+        # Apply limit if specified
+        if limit and limit > 0:
+            return valid_messages[-limit:]
+        
+        # Default to context_window_size
+        return valid_messages[-self.context_window_size:]
+
+    def can_add_message(self) -> bool:
+        """Check if chat can accept new messages"""
+        return self.is_active and not self.is_deleted and not self.is_archived
+
+    def update_message_stats(self, is_user_message: bool, tokens_used: int = 0):
+        """Update message statistics"""
+        self.total_messages += 1
+        if is_user_message:
+            self.total_user_messages += 1
+        else:
+            self.total_ai_messages += 1
+        
+        if tokens_used > 0:
+            self.total_tokens_used += tokens_used
+        
+        self.last_message_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def auto_generate_title(self):
+        """Auto-generate title if it's still the default"""
+        if self.title == "New Chat" and self.auto_title_generation:
+            # This would typically call a service to generate a title
+            # For now, we'll just use a simple approach
+            if hasattr(self, 'messages') and self.messages:
+                first_user_message = next(
+                    (msg for msg in self.messages if msg.sender_type == SenderType.USER), 
+                    None
+                )
+                if first_user_message and first_user_message.content:
+                    # Take first 50 chars of first message as title
+                    self.title = first_user_message.content[:50]
+                    if len(first_user_message.content) > 50:
+                        self.title += "..."
 
     @property
     def last_activity_at(self):
