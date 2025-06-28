@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Chat Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #f9f9f9;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            text-align: right;
+            margin-left: 20%;
+        }
+        .ai-message {
+            background-color: #e9ecef;
+            color: #333;
+            margin-right: 20%;
+        }
+        .system-message {
+            background-color: #fff3cd;
+            color: #856404;
+            text-align: center;
+            font-style: italic;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        input, button {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input {
+            flex: 1;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket Chat Test</h1>
+        
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div>
+            <label>Auth Token:</label>
+            <input type="text" id="token" placeholder="Paste your auth token here" style="width: 100%; margin-bottom: 10px;">
+            
+            <label>Chat ID:</label>
+            <input type="number" id="chatId" placeholder="Enter chat ID (e.g., 2)" value="2" style="width: 100%; margin-bottom: 10px;">
+            
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+        </div>
+        
+        <h2>Messages</h2>
+        <div id="messages" class="messages"></div>
+        
+        <div class="input-group">
+            <input type="text" id="messageInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter')sendMessage()">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        
+        function updateStatus(connected) {
+            const status = document.getElementById('status');
+            if (connected) {
+                status.className = 'status connected';
+                status.textContent = 'Connected';
+            } else {
+                status.className = 'status disconnected';
+                status.textContent = 'Disconnected';
+            }
+        }
+        
+        function addMessage(content, type = 'system') {
+            const messages = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            messageDiv.textContent = content;
+            messages.appendChild(messageDiv);
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function connect() {
+            const token = document.getElementById('token').value;
+            const chatId = document.getElementById('chatId').value;
+            
+            if (!token || !chatId) {
+                alert('Please enter both token and chat ID');
+                return;
+            }
+            
+            if (ws) {
+                ws.close();
+            }
+            
+            const wsUrl = `ws://localhost:8000/api/v1/ws/chat/${chatId}?token=${token}`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                updateStatus(true);
+                addMessage('Connected to chat', 'system');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data);
+                
+                switch (data.type) {
+                    case 'connected':
+                        addMessage('Connection confirmed by server', 'system');
+                        break;
+                        
+                    case 'user_message':
+                        addMessage(data.content, 'user');
+                        break;
+                        
+                    case 'ai_message':
+                        addMessage(data.content, 'ai');
+                        if (data.emotion_detected) {
+                            addMessage(`Emotion detected: ${data.emotion_detected}`, 'system');
+                        }
+                        break;
+                        
+                    case 'ai_typing':
+                        if (data.is_typing) {
+                            addMessage('AI is typing...', 'system');
+                        }
+                        break;
+                        
+                    case 'error':
+                        addMessage(`Error: ${data.error}`, 'system');
+                        break;
+                }
+            };
+            
+            ws.onclose = () => {
+                updateStatus(false);
+                addMessage('Disconnected from chat', 'system');
+                ws = null;
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addMessage('Connection error occurred', 'system');
+            };
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !ws || ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            // CORRECT FORMAT: type and content at top level
+            const messageData = {
+                type: 'chat_message',
+                content: message
+            };
+            
+            console.log('Sending:', messageData);
+            ws.send(JSON.stringify(messageData));
+            
+            input.value = '';
+        }
+        
+        // Auto-focus message input
+        document.getElementById('messageInput').focus();
+    </script>
+</body>
+</html>
