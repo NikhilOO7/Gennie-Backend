@@ -64,243 +64,158 @@ class OpenAIService:
     ) -> Dict[str, Any]:
         """
         Generate chat response with comprehensive error handling and token counting
+        
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            temperature: Sampling temperature (0-2)
+            max_tokens: Maximum tokens to generate
+            top_p: Nucleus sampling parameter
+            frequency_penalty: Frequency penalty (-2 to 2)
+            presence_penalty: Presence penalty (-2 to 2)
+            model: Model to use (defaults to configured model)
+            stream: Whether to stream the response
+            user_id: User ID for tracking
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with response data
         """
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Prepare request parameters
-            request_params = {
-                "model": model or self.chat_model,
-                "messages": messages,
-                "temperature": temperature or self.default_temperature,
-                "max_tokens": max_tokens or self.default_max_tokens,
-                "top_p": top_p or self.default_top_p,
-                "frequency_penalty": frequency_penalty or self.default_frequency_penalty,
-                "presence_penalty": presence_penalty or self.default_presence_penalty,
-                "stream": stream,
-                "user": user_id,
-                **kwargs
-            }
+            # Validate messages
+            if not messages or not isinstance(messages, list):
+                raise ValueError("Messages must be a non-empty list")
             
             # Count input tokens
             input_tokens = self.count_tokens_from_messages(messages)
             
-            # Log request details
-            logger.info(
-                f"OpenAI request started",
-                extra={
-                    "model": request_params["model"],
-                    "input_tokens": input_tokens,
-                    "max_tokens": request_params["max_tokens"],
-                    "temperature": request_params["temperature"],
-                    "user_id": user_id
-                }
-            )
+            # Prepare parameters
+            params = {
+                "model": model or self.chat_model,
+                "messages": messages,
+                "temperature": temperature if temperature is not None else self.default_temperature,
+                "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
+                "top_p": top_p if top_p is not None else self.default_top_p,
+                "frequency_penalty": frequency_penalty if frequency_penalty is not None else self.default_frequency_penalty,
+                "presence_penalty": presence_penalty if presence_penalty is not None else self.default_presence_penalty,
+                "stream": stream,
+            }
             
-            # Make API call
+            # Add optional parameters
+            if user_id:
+                params["user"] = str(user_id)
+            
+            # Add any additional kwargs
+            params.update(kwargs)
+            
+            logger.info(f"Generating chat response for user {user_id} with {len(messages)} messages")
+            
             if stream:
-                return await self._handle_streaming_response(request_params, start_time, input_tokens)
+                # Handle streaming response
+                return await self._handle_streaming_response(params, start_time, input_tokens)
             else:
-                return await self._handle_standard_response(request_params, start_time, input_tokens)
+                # Handle regular response
+                response = await self.client.chat.completions.create(**params)
+                
+                # Extract response data
+                response_text = response.choices[0].message.content
+                finish_reason = response.choices[0].finish_reason
+                
+                # Calculate tokens
+                output_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                # Calculate processing time
+                processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+                
+                logger.info(f"Chat response generated successfully: {total_tokens} tokens in {processing_time:.2f}s")
+                
+                return {
+                    "success": True,
+                    "response": response_text,
+                    "finish_reason": finish_reason,
+                    "tokens_used": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": total_tokens
+                    },
+                    "model_used": response.model,
+                    "processing_time": processing_time,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
         
         except Exception as e:
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.error(
-                f"OpenAI request failed after {processing_time:.2f}s: {str(e)}",
-                extra={
-                    "error_type": type(e).__name__,
-                    "user_id": user_id,
-                    "model": model or self.chat_model
-                },
-                exc_info=True
-            )
+            error_message = f"Chat generation failed: {str(e)}"
+            logger.error(error_message, exc_info=True)
             
             return {
                 "success": False,
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "processing_time": processing_time,
+                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds(),
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-    
-    async def _handle_standard_response(
-        self, 
-        request_params: Dict[str, Any], 
-        start_time: datetime, 
-        input_tokens: int
-    ) -> Dict[str, Any]:
-        """Handle standard (non-streaming) response"""
-        
-        response: ChatCompletion = await self.client.chat.completions.create(**request_params)
-        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-        
-        # Extract response data
-        choice = response.choices[0]
-        message_content = choice.message.content
-        finish_reason = choice.finish_reason
-        
-        # Token usage
-        usage = response.usage
-        output_tokens = usage.completion_tokens if usage else 0
-        total_tokens = usage.total_tokens if usage else input_tokens + output_tokens
-        
-        # Log successful response
-        logger.info(
-            f"OpenAI request completed in {processing_time:.2f}s",
-            extra={
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "finish_reason": finish_reason,
-                "processing_time": processing_time
-            }
-        )
-        
-        return {
-            "success": True,
-            "response": message_content,
-            "finish_reason": finish_reason,
-            "tokens_used": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens
-            },
-            "processing_time": processing_time,
-            "model": response.model,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "raw_response": response.model_dump() if hasattr(response, 'model_dump') else None
-        }
-
-    async def create_embedding(self, text: str) -> Dict[str, Any]:
-        """Create embeddings for text using OpenAI"""
-        try:
-            response = await self.client.embeddings.create(
-                model=self.embeddings_model,  # or "text-embedding-ada-002"
-                input=text
-            )
-            
-            return {
-                "success": True,
-                "embedding": response.data[0].embedding,
-                "model": response.model,
-                "usage": response.usage.dict() if response.usage else {}
-            }
-        except Exception as e:
-            logger.error(f"Failed to create embedding: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "embedding": None
             }
     
     async def _handle_streaming_response(
-        self, 
-        request_params: Dict[str, Any], 
-        start_time: datetime, 
+        self,
+        params: Dict[str, Any],
+        start_time: datetime,
         input_tokens: int
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Handle streaming response"""
-        
-        accumulated_content = ""
-        chunk_count = 0
+    ) -> Dict[str, Any]:
+        """Handle streaming response from OpenAI"""
         
         try:
-            stream = await self.client.chat.completions.create(**request_params)
+            stream = await self.client.chat.completions.create(**params)
             
+            chunks = []
             async for chunk in stream:
-                chunk_count += 1
-                
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    accumulated_content += content
-                    
-                    yield {
-                        "success": True,
-                        "chunk": content,
-                        "accumulated_content": accumulated_content,
-                        "chunk_number": chunk_count,
-                        "is_final": False,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                
-                # Check for finish
-                if chunk.choices and chunk.choices[0].finish_reason:
-                    processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-                    output_tokens = self.count_tokens(accumulated_content)
-                    
-                    yield {
-                        "success": True,
-                        "response": accumulated_content,
-                        "finish_reason": chunk.choices[0].finish_reason,
-                        "tokens_used": {
-                            "input_tokens": input_tokens,
-                            "output_tokens": output_tokens,
-                            "total_tokens": input_tokens + output_tokens
-                        },
-                        "processing_time": processing_time,
-                        "chunk_count": chunk_count,
-                        "is_final": True,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    break
-        
-        except Exception as e:
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.error(f"Streaming error after {processing_time:.2f}s: {str(e)}")
+                if chunk.choices[0].delta.content is not None:
+                    chunks.append(chunk.choices[0].delta.content)
             
-            yield {
-                "success": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
+            response_text = "".join(chunks)
+            output_tokens = self.count_tokens(response_text)
+            total_tokens = input_tokens + output_tokens
+            
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+            
+            return {
+                "success": True,
+                "response": response_text,
+                "tokens_used": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens
+                },
+                "model_used": params["model"],
                 "processing_time": processing_time,
-                "accumulated_content": accumulated_content,
-                "chunk_count": chunk_count,
-                "is_final": True,
+                "stream": True,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
-    def count_tokens_from_messages(self, messages: List[Dict[str, str]]) -> int:
-        """Count tokens in a list of messages"""
-        try:
-            # This is an approximation - actual token counting for chat models is more complex
-            total_tokens = 0
-            
-            for message in messages:
-                # 4 tokens per message for metadata
-                total_tokens += 4
-                
-                # Add tokens for role and content
-                if "role" in message:
-                    total_tokens += len(self.encoding.encode(message["role"]))
-                if "content" in message:
-                    total_tokens += len(self.encoding.encode(message["content"]))
-            
-            # Add 2 tokens for assistant reply priming
-            total_tokens += 2
-            
-            return total_tokens
         
         except Exception as e:
-            logger.error(f"Error counting tokens: {str(e)}")
-            # Fallback estimation
-            total_text = " ".join([msg.get("content", "") for msg in messages])
-            return len(total_text) // 4  # Rough approximation
-    
-    def count_tokens(self, text: str) -> int:
-        """Count tokens in text"""
-        try:
-            return len(self.encoding.encode(text))
-        except Exception as e:
-            logger.error(f"Error counting tokens: {str(e)}")
-            return len(text) // 4  # Rough approximation
+            logger.error(f"Streaming response failed: {str(e)}", exc_info=True)
+            raise
     
     async def generate_embeddings(
-        self, 
-        texts: Union[str, List[str]], 
+        self,
+        texts: Union[str, List[str]],
         model: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
-        """Generate embeddings for text(s)"""
+        """
+        Generate embeddings for text(s)
+        
+        Args:
+            texts: Text or list of texts to embed
+            model: Model to use (defaults to configured embeddings model)
+            user_id: User ID for tracking
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with embedding data
+        """
         start_time = datetime.now(timezone.utc)
         
         try:
@@ -308,20 +223,25 @@ class OpenAIService:
             if isinstance(texts, str):
                 texts = [texts]
             
+            # Validate input
+            if not texts or not all(isinstance(t, str) for t in texts):
+                raise ValueError("Text must be a string or list of strings")
+            
             # Count input tokens
             input_tokens = sum(self.count_tokens(text) for text in texts)
             
-            # Make API call
-            response: CreateEmbeddingResponse = await self.client.embeddings.create(
-                model=model or self.embeddings_model,
+            # Generate embeddings
+            response = await self.client.embeddings.create(
                 input=texts,
-                user=user_id
+                model=model or self.embeddings_model,
+                user=user_id if user_id else None,
+                **kwargs
             )
-            
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             # Extract embeddings
             embeddings = [data.embedding for data in response.data]
+            
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             logger.info(
                 f"Generated embeddings for {len(texts)} texts in {processing_time:.2f}s",
@@ -338,29 +258,106 @@ class OpenAIService:
                 "embeddings": embeddings,
                 "input_tokens": input_tokens,
                 "embedding_dimension": len(embeddings[0]) if embeddings else 0,
+                "model_used": response.model,
                 "processing_time": processing_time,
-                "model": response.model,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         
         except Exception as e:
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.error(f"Embeddings generation failed: {str(e)}")
+            error_message = f"Embedding generation failed: {str(e)}"
+            logger.error(error_message, exc_info=True)
             
             return {
                 "success": False,
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "processing_time": processing_time,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
+    async def create_embedding(self, text: str) -> Dict[str, Any]:
+        """Create embeddings for text using OpenAI (backward compatibility)"""
+        result = await self.generate_embeddings(text)
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "embedding": result["embeddings"][0] if result["embeddings"] else None,
+                "model": result["model_used"],
+                "usage": {"total_tokens": result["input_tokens"]}
+            }
+        else:
+            return {
+                "success": False,
+                "error": result["error"],
+                "embedding": None
+            }
+    
+    def count_tokens(self, text: str) -> int:
+        """
+        Count tokens in text
+        
+        Args:
+            text: Text to count tokens for
+            
+        Returns:
+            Number of tokens
+        """
+        try:
+            if not text:
+                return 0
+            
+            if self.encoding:
+                return len(self.encoding.encode(text))
+            else:
+                # Fallback estimation (roughly 4 characters per token)
+                return len(text) // 4
+        
+        except Exception as e:
+            logger.warning(f"Token counting failed: {str(e)}, using estimation")
+            return len(text) // 4
+    
+    def count_tokens_from_messages(self, messages: List[Dict[str, str]]) -> int:
+        """Count tokens in a list of messages"""
+        try:
+            # This is an approximation - actual token counting for chat models is more complex
+            total_tokens = 0
+            
+            for message in messages:
+                # 4 tokens per message for metadata
+                total_tokens += 4
+                
+                # Add tokens for role and content
+                if "role" in message:
+                    total_tokens += self.count_tokens(message["role"])
+                if "content" in message:
+                    total_tokens += self.count_tokens(message["content"])
+            
+            # Add 2 tokens for assistant reply priming
+            total_tokens += 2
+            
+            return total_tokens
+        
+        except Exception as e:
+            logger.error(f"Error counting tokens: {str(e)}")
+            # Fallback estimation
+            total_text = " ".join([msg.get("content", "") for msg in messages])
+            return len(total_text) // 4
+    
     async def moderate_content(
-        self, 
+        self,
         text: str,
         user_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Check content for policy violations"""
+        """
+        Check content for policy violations
+        
+        Args:
+            text: Text to moderate
+            user_id: User ID for tracking
+            
+        Returns:
+            Dictionary with moderation results
+        """
         start_time = datetime.now(timezone.utc)
         
         try:
@@ -382,20 +379,18 @@ class OpenAIService:
             }
         
         except Exception as e:
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            logger.error(f"Content moderation failed: {str(e)}")
+            logger.error(f"Content moderation failed: {str(e)}", exc_info=True)
             
             return {
                 "success": False,
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "processing_time": processing_time,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
     async def generate_title(
-        self, 
-        conversation_messages: List[Dict[str, str]], 
+        self,
+        conversation_messages: List[Dict[str, str]],
         max_length: int = 50
     ) -> Dict[str, Any]:
         """Generate a title for a conversation"""
@@ -406,42 +401,39 @@ class OpenAIService:
             The title should be {max_length} characters or less and capture the main topic or theme.
             Respond with only the title, no quotes or additional text."""
             
-            # Use first few messages to generate title
-            context_messages = conversation_messages[:3] if len(conversation_messages) > 3 else conversation_messages
-            
             # Build messages for title generation
-            messages = [
+            title_messages = [
                 {"role": "system", "content": system_prompt}
             ]
             
-            # Add conversation context
-            for msg in context_messages:
-                messages.append(msg)
-            
-            messages.append({
-                "role": "user", 
-                "content": "Based on this conversation, generate a concise title."
-            })
+            # Add a summary of the conversation
+            if len(conversation_messages) > 0:
+                conversation_summary = "\n".join([
+                    f"{msg['role']}: {msg['content'][:100]}..."
+                    for msg in conversation_messages[:5]
+                ])
+                title_messages.append({
+                    "role": "user",
+                    "content": f"Generate a title for this conversation:\n{conversation_summary}"
+                })
             
             # Generate title
             result = await self.generate_chat_response(
-                messages=messages,
-                temperature=0.3,  # Lower temperature for more consistent titles
-                max_tokens=20,    # Short response
-                model="gpt-3.5-turbo"  # Use faster model for titles
+                messages=title_messages,
+                temperature=0.7,
+                max_tokens=20,
+                model="gpt-3.5-turbo"
             )
             
             if result["success"]:
-                title = result["response"].strip().strip('"\'')
-                # Ensure title is within length limit
+                title = result["response"].strip()
                 if len(title) > max_length:
                     title = title[:max_length-3] + "..."
                 
                 return {
                     "success": True,
                     "title": title,
-                    "processing_time": result["processing_time"],
-                    "tokens_used": result["tokens_used"]["total_tokens"]
+                    "processing_time": result["processing_time"]
                 }
             else:
                 return result
@@ -455,14 +447,15 @@ class OpenAIService:
             }
     
     async def summarize_conversation(
-        self, 
-        messages: List[Dict[str, str]], 
+        self,
+        messages: List[Dict[str, str]],
         max_length: int = 200
     ) -> Dict[str, Any]:
-        """Generate a summary of a conversation"""
+        """Summarize a conversation"""
         
         try:
-            system_prompt = f"""Summarize this conversation in {max_length} characters or less. 
+            # Create prompt for summarization
+            system_prompt = """You are a helpful assistant that creates concise summaries.
             Focus on the main topics discussed and key points. Be concise but comprehensive."""
             
             # Build messages for summarization
@@ -509,14 +502,18 @@ class OpenAIService:
             }
     
     async def health_check(self) -> bool:
-        """Check if OpenAI service is healthy"""
+        """
+        Check if OpenAI service is healthy
+        
+        Returns:
+            True if healthy, False otherwise
+        """
         try:
-            # Simple API call to test connectivity
+            # Try a simple completion
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": "Hello"}],
-                max_tokens=5,
-                temperature=0
+                model=self.chat_model,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=5
             )
             
             return response.choices[0].message.content is not None
@@ -557,6 +554,34 @@ class OpenAIService:
                 "presence_penalty": self.default_presence_penalty
             }
         }
+    
+    async def cleanup(self) -> None:
+        """
+        Cleanup OpenAI service resources
+        Called during application shutdown
+        """
+        try:
+            logger.info("Starting OpenAI service cleanup...")
+            
+            # Close any pending async operations
+            if hasattr(self.client, '_client'):
+                await self.client._client.aclose()
+            
+            # Clear any caches or temporary data
+            self.encoding = None
+            
+            logger.info("OpenAI service cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during OpenAI service cleanup: {str(e)}")
+            # Don't raise - we want shutdown to continue
+    
+    async def __aenter__(self):
+        """Async context manager entry"""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.cleanup()
 
 # Create global service instance
 openai_service = OpenAIService()

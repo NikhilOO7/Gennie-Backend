@@ -133,24 +133,18 @@ class Message(Base):
     
     def set_metadata(self, key: str, value: Any) -> None:
         """Set metadata value"""
-        metadata = self.message_metadata.copy()
-        metadata[key] = value
-        self.message_metadata = metadata
+        if self.message_metadata is None:
+            self.message_metadata = {}
+        self.message_metadata[key] = value
     
-    def update_metadata(self, updates: Dict[str, Any]) -> None:
-        """Update multiple metadata values"""
-        metadata = self.message_metadata.copy()
-        metadata.update(updates)
-        self.message_metadata = metadata
-    
-    def soft_delete(self) -> None:
-        """Soft delete the message"""
-        self.is_deleted = True
+    def mark_as_edited(self) -> None:
+        """Mark message as edited"""
+        self.is_edited = True
         self.updated_at = datetime.now(timezone.utc)
     
-    def restore(self) -> None:
-        """Restore a soft-deleted message"""
-        self.is_deleted = False
+    def mark_as_deleted(self) -> None:
+        """Mark message as deleted (soft delete)"""
+        self.is_deleted = True
         self.updated_at = datetime.now(timezone.utc)
     
     def flag(self, reason: str = None) -> None:
@@ -158,40 +152,45 @@ class Message(Base):
         self.is_flagged = True
         if reason:
             self.set_metadata("flag_reason", reason)
-        self.set_metadata("flagged_at", datetime.now(timezone.utc).isoformat())
-        self.updated_at = datetime.now(timezone.utc)
     
     def unflag(self) -> None:
         """Remove flag from message"""
         self.is_flagged = False
-        metadata = self.message_metadata.copy()
-        metadata.pop("flag_reason", None)
-        metadata.pop("flagged_at", None)
-        self.message_metadata = metadata
-        self.updated_at = datetime.now(timezone.utc)
+        if "flag_reason" in self.message_metadata:
+            del self.message_metadata["flag_reason"]
     
-    def edit_content(self, new_content: str, edit_reason: str = None) -> None:
-        """Edit message content"""
-        if new_content != self.content:
-            # Store original content in metadata
-            if not self.is_edited:
-                self.set_metadata("original_content", self.content)
-                self.set_metadata("edit_history", [])
-            
-            # Add to edit history
-            edit_history = self.get_metadata("edit_history", [])
-            edit_history.append({
-                "previous_content": self.content,
-                "edited_at": datetime.now(timezone.utc).isoformat(),
-                "reason": edit_reason
-            })
-            self.set_metadata("edit_history", edit_history)
-            
-            # Update content
-            self.content = new_content
-            self.is_edited = True
-            self.generate_content_hash()
-            self.updated_at = datetime.now(timezone.utc)
+    @classmethod
+    def create_user_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
+        """Factory method to create a user message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.USER,
+            message_type=kwargs.get("message_type", MessageType.TEXT),
+            **{k: v for k, v in kwargs.items() if k not in ["message_type"]}
+        )
+    
+    @classmethod
+    def create_assistant_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
+        """Factory method to create an assistant message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.ASSISTANT,
+            message_type=kwargs.get("message_type", MessageType.TEXT),
+            **{k: v for k, v in kwargs.items() if k not in ["message_type"]}
+        )
+    
+    @classmethod
+    def create_system_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
+        """Factory method to create a system message"""
+        return cls(
+            chat_id=chat_id,
+            content=content,
+            sender_type=SenderType.SYSTEM,
+            message_type=MessageType.SYSTEM,
+            **kwargs
+        )
     
     def get_emotion_summary(self) -> Dict[str, Any]:
         """Get emotion analysis summary"""
@@ -315,67 +314,29 @@ class Message(Base):
         
         return any(keyword in content for keyword in keywords)
     
-    def get_time_since_creation(self) -> Dict[str, Any]:
-        """Get time elapsed since message creation"""
-        if not self.created_at:
-            return {"error": "No creation time available"}
+    def extract_urls(self) -> List[str]:
+        """Extract URLs from message content"""
+        import re
+        if not self.content:
+            return []
         
-        now = datetime.now(timezone.utc)
-        diff = now - self.created_at
+        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+'
+        return re.findall(url_pattern, self.content)
+    
+    def extract_mentions(self) -> List[str]:
+        """Extract @mentions from message content"""
+        import re
+        if not self.content:
+            return []
         
-        return {
-            "total_seconds": diff.total_seconds(),
-            "total_minutes": diff.total_seconds() / 60,
-            "total_hours": diff.total_seconds() / 3600,
-            "total_days": diff.days,
-            "human_readable": self._format_time_diff(diff)
-        }
+        mention_pattern = r'@(\w+)'
+        return re.findall(mention_pattern, self.content)
     
-    def _format_time_diff(self, diff) -> str:
-        """Format time difference in human-readable format"""
-        if diff.days > 0:
-            return f"{diff.days} day{'s' if diff.days != 1 else ''} ago"
-        elif diff.seconds > 3600:
-            hours = diff.seconds // 3600
-            return f"{hours} hour{'s' if hours != 1 else ''} ago"
-        elif diff.seconds > 60:
-            minutes = diff.seconds // 60
-            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-        else:
-            return "Just now"
-    
-    @classmethod
-    def create_user_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
-        """Create a user message"""
-        return cls(
-            chat_id=chat_id,
-            content=content,
-            sender_type=SenderType.USER,
-            message_type=MessageType.TEXT,
-            **kwargs
-        )
-    
-    @classmethod
-    def create_assistant_message(cls, chat_id: int, content: str, tokens_used: int = 0, 
-                                processing_time: float = None, **kwargs) -> "Message":
-        """Create an assistant message"""
-        return cls(
-            chat_id=chat_id,
-            content=content,
-            sender_type=SenderType.ASSISTANT,
-            message_type=MessageType.TEXT,
-            tokens_used=tokens_used,
-            processing_time=processing_time,
-            **kwargs
-        )
-    
-    @classmethod
-    def create_system_message(cls, chat_id: int, content: str, **kwargs) -> "Message":
-        """Create a system message"""
-        return cls(
-            chat_id=chat_id,
-            content=content,
-            sender_type=SenderType.SYSTEM,
-            message_type=MessageType.SYSTEM,
-            **kwargs
-        )
+    def extract_hashtags(self) -> List[str]:
+        """Extract #hashtags from message content"""
+        import re
+        if not self.content:
+            return []
+        
+        hashtag_pattern = r'#(\w+)'
+        return re.findall(hashtag_pattern, self.content)

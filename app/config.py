@@ -274,6 +274,9 @@ class DevelopmentSettings(Settings):
     DATABASE_ECHO: bool = True
     RELOAD: bool = True
     RATE_LIMIT_ENABLED: bool = False
+    LOG_JSON_FORMAT: bool = False  # Disable JSON logging in development
+    LOG_FILE_ENABLED: bool = False  # Disable file logging in development
+    RATE_LIMIT_PER_MINUTE: int = 1000  # Higher rate limit for development
 
 class ProductionSettings(Settings):
     """Production environment settings"""

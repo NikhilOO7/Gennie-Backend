@@ -369,6 +369,24 @@ class UtilsService:
     def is_development() -> bool:
         """Check if running in development"""
         return settings.ENVIRONMENT.lower() == "development"
+    
+    @staticmethod
+    def generate_chat_title(
+        user_id: Optional[int] = None,
+        chat_id: Optional[int] = None,
+        title: Optional[str] = None
+    ) -> str:
+        """Generate a standardized chat title"""
+        if title:
+            return UtilsService.clean_text(title, max_length=50)
+        
+        parts = []
+        if user_id:
+            parts.append(f"User {user_id}")
+        if chat_id:
+            parts.append(f"Chat {chat_id}")
+        
+        return " - ".join(parts) or "Untitled Chat"
 
 # Create global service instance
 utils_service = UtilsService()

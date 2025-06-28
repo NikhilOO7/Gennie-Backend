@@ -1,3 +1,7 @@
+"""
+Prompt Service - Dynamic prompt management and engineering
+"""
+
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import json
@@ -331,3 +335,6 @@ Analysis:"""
 
 # Global service instance
 prompt_service = PromptService()
+
+# Export
+__all__ = ["PromptService", "prompt_service", "PromptTemplate"]

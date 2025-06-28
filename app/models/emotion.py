@@ -1,8 +1,13 @@
+"""
+Emotion Model - Emotion analysis records
+"""
+
+import numpy as np
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON, ForeignKey, Index, Float, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import enum
 
 from app.database import Base
@@ -113,69 +118,47 @@ class Emotion(Base):
         elif self.emotion_intensity > 0.4:
             return "Moderate"
         elif self.emotion_intensity > 0.2:
-            return "Weak"
+            return "Mild"
         else:
-            return "Very Weak"
+            return "Very Mild"
     
-    def get_confidence_label(self) -> str:
-        """Get confidence level label"""
-        if self.confidence_score > 0.8:
-            return "High"
-        elif self.confidence_score > 0.6:
-            return "Medium"
-        elif self.confidence_score > 0.4:
-            return "Low"
-        else:
-            return "Very Low"
-    
-    def is_positive(self) -> bool:
-        """Check if emotion is generally positive"""
-        positive_emotions = {EmotionType.JOY, EmotionType.EXCITEMENT, EmotionType.CONTENTMENT, EmotionType.SURPRISE}
+    def is_positive_emotion(self) -> bool:
+        """Check if emotion is positive"""
+        positive_emotions = [
+            EmotionType.JOY,
+            EmotionType.EXCITEMENT,
+            EmotionType.CONTENTMENT,
+            EmotionType.SURPRISE  # Can be positive or negative
+        ]
         return self.primary_emotion in positive_emotions
     
-    def is_negative(self) -> bool:
-        """Check if emotion is generally negative"""
-        negative_emotions = {EmotionType.SADNESS, EmotionType.ANGER, EmotionType.FEAR, 
-                           EmotionType.DISGUST, EmotionType.ANXIETY, EmotionType.FRUSTRATION}
+    def is_negative_emotion(self) -> bool:
+        """Check if emotion is negative"""
+        negative_emotions = [
+            EmotionType.SADNESS,
+            EmotionType.ANGER,
+            EmotionType.FEAR,
+            EmotionType.DISGUST,
+            EmotionType.CONTEMPT,
+            EmotionType.ANXIETY,
+            EmotionType.FRUSTRATION
+        ]
         return self.primary_emotion in negative_emotions
     
-    def is_neutral(self) -> bool:
-        """Check if emotion is neutral"""
-        return self.primary_emotion == EmotionType.NEUTRAL
+    def get_all_emotions_sorted(self) -> List[Tuple[str, float]]:
+        """Get all emotions sorted by score"""
+        if not self.emotion_scores:
+            return []
+        
+        sorted_emotions = sorted(
+            self.emotion_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        return sorted_emotions
     
-    def get_all_emotions(self) -> List[Dict[str, Any]]:
-        """Get all detected emotions with scores"""
-        emotions = []
-        
-        # Add primary emotion
-        emotions.append({
-            "emotion": self.primary_emotion.value,
-            "score": self.emotion_scores.get(self.primary_emotion.value, self.confidence_score),
-            "is_primary": True
-        })
-        
-        # Add secondary emotion if exists
-        if self.secondary_emotion:
-            emotions.append({
-                "emotion": self.secondary_emotion.value,
-                "score": self.emotion_scores.get(self.secondary_emotion.value, 0.0),
-                "is_primary": False
-            })
-        
-        # Add other emotions from scores
-        for emotion, score in self.emotion_scores.items():
-            if emotion not in [e["emotion"] for e in emotions]:
-                emotions.append({
-                    "emotion": emotion,
-                    "score": score,
-                    "is_primary": False
-                })
-        
-        # Sort by score
-        return sorted(emotions, key=lambda x: x["score"], reverse=True)
-    
-    def to_dict(self, include_context: bool = False) -> Dict[str, Any]:
-        """Convert emotion to dictionary"""
+    def to_dict(self, include_analysis: bool = True) -> Dict[str, Any]:
+        """Convert emotion record to dictionary"""
         data = {
             "id": self.id,
             "user_id": self.user_id,
@@ -183,59 +166,145 @@ class Emotion(Base):
             "message_id": self.message_id,
             "primary_emotion": self.primary_emotion.value,
             "secondary_emotion": self.secondary_emotion.value if self.secondary_emotion else None,
-            "emotion_label": self.get_emotion_label(),
             "confidence_score": self.confidence_score,
-            "confidence_label": self.get_confidence_label(),
             "sentiment_score": self.sentiment_score,
-            "sentiment_label": self.get_sentiment_label(),
             "emotion_intensity": self.emotion_intensity,
+            "emotion_label": self.get_emotion_label(),
+            "sentiment_label": self.get_sentiment_label(),
             "intensity_label": self.get_intensity_label(),
-            "analysis_method": self.analysis_method,
-            "is_positive": self.is_positive(),
-            "is_negative": self.is_negative(),
-            "is_neutral": self.is_neutral(),
-            "all_emotions": self.get_all_emotions(),
+            "is_positive": self.is_positive_emotion(),
+            "is_negative": self.is_negative_emotion(),
             "detected_at": self.detected_at.isoformat() if self.detected_at else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
         
-        if include_context:
+        if include_analysis:
             data.update({
                 "emotion_scores": self.emotion_scores,
-                "context_used": self.context_used,
+                "analysis_method": self.analysis_method,
                 "text_analyzed": self.text_analyzed,
+                "context_used": self.context_used,
                 "emotion_duration": self.emotion_duration,
+                "all_emotions": self.get_all_emotions_sorted()
             })
         
         return data
     
     @classmethod
-    def create_from_analysis(cls, user_id: int, analysis_result: Dict[str, Any], 
-                           chat_id: int = None, message_id: int = None) -> "Emotion":
+    def create_from_analysis(
+        cls,
+        user_id: int,
+        analysis_result: Dict[str, Any],
+        chat_id: Optional[int] = None,
+        message_id: Optional[int] = None
+    ) -> "Emotion":
         """Create emotion record from analysis result"""
+        # Extract primary emotion
+        primary_emotion = analysis_result.get("primary_emotion", "neutral")
+        if isinstance(primary_emotion, str):
+            try:
+                primary_emotion = EmotionType(primary_emotion.lower())
+            except ValueError:
+                primary_emotion = EmotionType.NEUTRAL
+        
+        # Extract secondary emotion if present
+        secondary_emotion = analysis_result.get("secondary_emotion")
+        if secondary_emotion and isinstance(secondary_emotion, str):
+            try:
+                secondary_emotion = EmotionType(secondary_emotion.lower())
+            except ValueError:
+                secondary_emotion = None
+        
         return cls(
             user_id=user_id,
             chat_id=chat_id,
             message_id=message_id,
-            primary_emotion=EmotionType(analysis_result.get("primary_emotion", "neutral")),
-            secondary_emotion=EmotionType(analysis_result["secondary_emotion"]) if analysis_result.get("secondary_emotion") else None,
+            primary_emotion=primary_emotion,
+            secondary_emotion=secondary_emotion,
             emotion_scores=analysis_result.get("emotion_scores", {}),
-            confidence_score=analysis_result.get("confidence_score", 0.0),
+            confidence_score=analysis_result.get("confidence_score", 0.5),
             sentiment_score=analysis_result.get("sentiment_score", 0.0),
             emotion_intensity=analysis_result.get("emotion_intensity", 0.5),
             analysis_method=analysis_result.get("analysis_method", "vader"),
-            text_analyzed=analysis_result.get("text_analyzed"),
-            context_used=analysis_result.get("context_used", {}),
+            text_analyzed=analysis_result.get("text_analyzed", "")[:500],  # Limit text length
+            context_used=analysis_result.get("context_used", {})
         )
     
-    def get_emotion_pattern_summary(self) -> Dict[str, Any]:
-        """Get summary for emotion pattern analysis"""
+    def update_from_analysis(self, analysis_result: Dict[str, Any]) -> None:
+        """Update emotion record with new analysis results"""
+        # Update primary emotion
+        primary_emotion = analysis_result.get("primary_emotion")
+        if primary_emotion:
+            try:
+                self.primary_emotion = EmotionType(primary_emotion.lower())
+            except ValueError:
+                pass
+        
+        # Update scores
+        if "confidence_score" in analysis_result:
+            self.confidence_score = analysis_result["confidence_score"]
+        if "sentiment_score" in analysis_result:
+            self.sentiment_score = analysis_result["sentiment_score"]
+        if "emotion_intensity" in analysis_result:
+            self.emotion_intensity = analysis_result["emotion_intensity"]
+        if "emotion_scores" in analysis_result:
+            self.emotion_scores = analysis_result["emotion_scores"]
+        
+        # Update metadata
+        if "analysis_method" in analysis_result:
+            self.analysis_method = analysis_result["analysis_method"]
+        if "context_used" in analysis_result:
+            self.context_used = analysis_result["context_used"]
+    
+    def get_emotion_trajectory(self, other_emotions: List["Emotion"]) -> Dict[str, Any]:
+        """Analyze emotion trajectory given a list of emotions"""
+        if not other_emotions:
+            return {
+                "trend": "stable",
+                "changes": [],
+                "volatility": 0.0
+            }
+        
+        # Sort by detection time
+        all_emotions = [self] + other_emotions
+        all_emotions.sort(key=lambda e: e.detected_at)
+        
+        # Calculate changes
+        changes = []
+        for i in range(1, len(all_emotions)):
+            prev_emotion = all_emotions[i-1]
+            curr_emotion = all_emotions[i]
+            
+            if prev_emotion.primary_emotion != curr_emotion.primary_emotion:
+                changes.append({
+                    "from": prev_emotion.primary_emotion.value,
+                    "to": curr_emotion.primary_emotion.value,
+                    "timestamp": curr_emotion.detected_at.isoformat(),
+                    "sentiment_change": curr_emotion.sentiment_score - prev_emotion.sentiment_score
+                })
+        
+        # Calculate volatility (how much emotions change)
+        sentiment_scores = [e.sentiment_score for e in all_emotions]
+        if len(sentiment_scores) > 1:
+            volatility = np.std(sentiment_scores)
+        else:
+            volatility = 0.0
+        
+        # Determine trend
+        if len(sentiment_scores) >= 2:
+            recent_avg = np.mean(sentiment_scores[-3:])
+            early_avg = np.mean(sentiment_scores[:3])
+            if recent_avg > early_avg + 0.1:
+                trend = "improving"
+            elif recent_avg < early_avg - 0.1:
+                trend = "declining"
+            else:
+                trend = "stable"
+        else:
+            trend = "stable"
+        
         return {
-            "primary_emotion": self.primary_emotion.value,
-            "sentiment_score": self.sentiment_score,
-            "emotion_intensity": self.emotion_intensity,
-            "confidence_score": self.confidence_score,
-            "detected_at": self.detected_at,
-            "is_positive": self.is_positive(),
-            "is_negative": self.is_negative(),
+            "trend": trend,
+            "changes": changes,
+            "volatility": float(volatility),
+            "emotion_sequence": [e.primary_emotion.value for e in all_emotions]
         }

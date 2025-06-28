@@ -1,46 +1,75 @@
 """
-FastAPI Main Application - AI Chatbot Backend
+Main Application Entry Point - AI Chatbot Backend
+FastAPI application with comprehensive middleware, error handling, and lifecycle management
 """
 
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy.exc import SQLAlchemyError
-import time
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from contextlib import asynccontextmanager
 import logging
-import asyncio
+import sys
 from datetime import datetime, timezone
+import uvicorn
 from typing import Dict, Any
 
 from app.config import settings
-from app.database import create_tables, check_db_health, check_redis_health, engine, init_database, cleanup_database
-from app.routers import auth, users, chat, ai, websocket
-from app.routers.health import health_router
+from app.database import create_tables, check_db_health, check_redis_health, cleanup_database
+from app.routers import auth, users, chat, ai, websocket, health
 
-# Configure structured logging
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from app.middleware import (
+    RateLimitMiddleware,
+    LoggingMiddleware,
+    SecurityHeadersMiddleware,
+    CompressionMiddleware
 )
-logger = logging.getLogger(__name__)
+from app.logger import setup_logging
+
+# Setup logging
+logger = setup_logging()
+
+# Application metadata
+app_info = {
+    "title": "AI Chatbot Backend",
+    "description": """
+    A production-ready AI-powered conversational backend with:
+    - Real-time chat capabilities via WebSocket
+    - OpenAI integration for intelligent responses
+    - Emotion detection and sentiment analysis
+    - User personalization and preference learning
+    - Comprehensive authentication and authorization
+    - Redis caching for improved performance
+    - PostgreSQL for reliable data persistence
+    """,
+    "version": "2.0.0",
+    "contact": {
+        "name": "AI Chatbot Team",
+        "email": "support@aichatbot.com",
+    },
+    "license_info": {
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Modern FastAPI lifespan event handler with comprehensive startup/shutdown
+    Application lifecycle manager
+    Handles startup and shutdown operations
     """
-    # Startup sequence
+    # Startup
     logger.info("🚀 Starting AI Chatbot Backend...")
+    
     startup_tasks = []
     
     try:
-        # 1. Database initialization
-        startup_tasks.append("Database setup")
-        await init_database()
+        # 1. Database setup
+        startup_tasks.append("Database initialization")
+        await create_tables()
         logger.info("✅ Database tables created/verified")
         
         # 2. Health checks
@@ -105,254 +134,196 @@ async def lifespan(app: FastAPI):
         
     except Exception as e:
         logger.error(f"❌ Shutdown error: {str(e)}")
+        # Don't raise - we want shutdown to complete
 
-# Create FastAPI app with all metadata
+# Create FastAPI app
 app = FastAPI(
-    title=settings.APP_NAME,
-    description="Advanced AI Chatbot Backend with Voice Processing, Emotion Analysis, and Personalization",
-    version=settings.APP_VERSION,
+    **app_info,
+    lifespan=lifespan,
     docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
     openapi_url="/openapi.json" if settings.ENVIRONMENT != "production" else None,
-    lifespan=lifespan,
-    swagger_ui_parameters={
-        "syntaxHighlight.theme": "obsidian",
-        "persistAuthorization": True,
-    }
 )
 
-# Add security headers middleware
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    
-    if settings.ENVIRONMENT == "production":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    
-    return response
-
-# CORS middleware
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Page", "X-Per-Page"],
 )
 
-# GZip compression
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Add security headers
+app.add_middleware(SecurityHeadersMiddleware)
 
-# Trusted host middleware for production
-if settings.ENVIRONMENT == "production":
+# Add compression
+app.add_middleware(CompressionMiddleware)
+
+# Add trusted host middleware
+if settings.ALLOWED_HOSTS:
     app.add_middleware(
-        TrustedHostMiddleware, 
+        TrustedHostMiddleware,
         allowed_hosts=settings.ALLOWED_HOSTS
     )
 
-# Request ID middleware
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    import uuid
-    request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
-    
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
+# Add rate limiting
+app.add_middleware(
+    RateLimitMiddleware,
+    requests_per_minute=settings.RATE_LIMIT_PER_MINUTE
+)
 
-# Request timing middleware
-@app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
-    
-    # Log slow requests
-    if process_time > 1.0:
-        logger.warning(f"Slow request: {request.method} {request.url.path} took {process_time:.2f}s")
-    
-    return response
+# Add logging middleware
+app.add_middleware(LoggingMiddleware)
 
-# Request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    # Log request
-    logger.info(f"Request: {request.method} {request.url.path} from {request.client.host}")
-    
-    try:
-        response = await call_next(request)
-        
-        # Log response
-        logger.info(f"Response: {response.status_code} for {request.method} {request.url.path}")
-        
-        return response
-    except Exception as e:
-        logger.error(f"Request failed: {request.method} {request.url.path} - {str(e)}")
-        raise
+# Include routers
+app.include_router(auth, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(users, prefix="/api/v1/users", tags=["Users"])
+app.include_router(chat, prefix="/api/v1/chat", tags=["Chat"])
+app.include_router(ai, prefix="/api/v1/ai", tags=["AI"])
+app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
+app.include_router(health, prefix="/health", tags=["Health"])
+
+# Root endpoint
+@app.get("/", include_in_schema=False)
+async def root():
+    """Root endpoint - API information"""
+    return {
+        "name": app_info["title"],
+        "version": app_info["version"],
+        "status": "running",
+        "environment": settings.ENVIRONMENT,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoints": {
+            "docs": "/docs" if settings.ENVIRONMENT != "production" else None,
+            "redoc": "/redoc" if settings.ENVIRONMENT != "production" else None,
+            "health": "/health",
+            "api": "/api/v1"
+        }
+    }
 
 # Global exception handlers
-@app.exception_handler(SQLAlchemyError)
-async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
-    logger.error(f"Database error on {request.url}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Database Error",
-            "detail": "A database error occurred" if settings.ENVIRONMENT == "production" else str(exc),
-            "request_id": getattr(request.state, "request_id", None)
-        }
-    )
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Handle HTTP exceptions"""
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": exc.detail,
             "status_code": exc.status_code,
-            "request_id": getattr(request.state, "request_id", None)
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url)
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors"""
+    errors = []
+    for error in exc.errors():
+        errors.append({
+            "field": " -> ".join(str(loc) for loc in error["loc"]),
+            "message": error["msg"],
+            "type": error["type"]
+        })
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation failed",
+            "errors": errors,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": str(request.url)
         }
     )
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception on {request.url}: {exc}", exc_info=True)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle general exceptions"""
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
     
-    if settings.ENVIRONMENT == "development":
-        # In development, show detailed error
+    # Don't expose internal errors in production
+    if settings.ENVIRONMENT == "production":
         return JSONResponse(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "error": "Internal Server Error",
-                "detail": str(exc),
-                "type": type(exc).__name__,
-                "request_id": getattr(request.state, "request_id", None)
+                "error": "Internal server error",
+                "status_code": 500,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "path": str(request.url)
             }
         )
     else:
-        # In production, hide details
         return JSONResponse(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "error": "Internal Server Error",
-                "message": "An unexpected error occurred",
-                "request_id": getattr(request.state, "request_id", None)
+                "error": str(exc),
+                "type": type(exc).__name__,
+                "status_code": 500,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "path": str(request.url)
             }
         )
 
-# Root endpoint
-@app.get("/", tags=["Root"])
-async def root():
-    """API root endpoint with system information"""
-    return {
-        "message": "🤖 AI Chatbot Backend API",
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "status": "operational",
-        "environment": settings.ENVIRONMENT,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "docs": {
-            "swagger": "/docs" if settings.ENVIRONMENT != "production" else None,
-            "redoc": "/redoc" if settings.ENVIRONMENT != "production" else None,
-            "openapi": "/openapi.json" if settings.ENVIRONMENT != "production" else None
-        },
-        "endpoints": {
-            "health": "/api/v1/health",
-            "auth": "/api/v1/auth",
-            "users": "/api/v1/users",
-            "chat": "/api/v1/chat",
-            "ai": "/api/v1/ai",
-            "websocket": "/api/v1/ws"
-        }
-    }
+# Custom middleware for request ID tracking
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add request ID to each request for tracking"""
+    import uuid
+    request_id = str(uuid.uuid4())
+    
+    # Add to request state
+    request.state.request_id = request_id
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Add to response headers
+    response.headers["X-Request-ID"] = request_id
+    
+    return response
 
-# API versioning endpoints
-@app.get("/api", tags=["Root"])
-async def api_versions():
-    """List available API versions"""
-    return {
-        "versions": {
-            "v1": {
-                "status": "current",
-                "base_url": "/api/v1",
-                "docs": "/docs"
-            }
-        },
-        "current_version": "v1"
-    }
-
-# Include routers with proper prefixes
-app.include_router(health_router, prefix="/api/v1", tags=["Health"])
-app.include_router(auth, prefix="/api/v1/auth", tags=["Authentication"])
-app.include_router(users, prefix="/api/v1/users", tags=["Users"])
-app.include_router(chat, prefix="/api/v1/chat", tags=["Chat Management"])
-app.include_router(ai, prefix="/api/v1/ai", tags=["AI Conversation"])
-app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
-
-# Static files serving
-if settings.ENVIRONMENT == "development":
-    try:
+# Performance monitoring endpoint (only in non-production)
+if settings.ENVIRONMENT != "production":
+    @app.get("/debug/performance", include_in_schema=False)
+    async def performance_metrics():
+        """Get application performance metrics"""
+        import psutil
         import os
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
-        if os.path.exists(static_dir):
-            app.mount("/static", StaticFiles(directory=static_dir), name="static")
-            logger.info("✅ Static files mounted at /static")
-    except Exception as e:
-        logger.debug(f"Static files not mounted: {e}")
-
-# Add custom OpenAPI schema
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    
-    from fastapi.openapi.utils import get_openapi
-    
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    
-    # Add security schemes
-    openapi_schema["components"]["securitySchemes"] = {
-        "bearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-            "description": "Enter: Bearer <JWT Token>"
+        
+        process = psutil.Process(os.getpid())
+        
+        return {
+            "cpu": {
+                "percent": process.cpu_percent(interval=0.1),
+                "count": psutil.cpu_count()
+            },
+            "memory": {
+                "rss": process.memory_info().rss / 1024 / 1024,  # MB
+                "vms": process.memory_info().vms / 1024 / 1024,  # MB
+                "percent": process.memory_percent()
+            },
+            "connections": len(process.connections()),
+            "threads": process.num_threads(),
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
-    }
-    
-    # Add servers for different environments
-    openapi_schema["servers"] = [
-        {"url": "http://localhost:8000", "description": "Local development server"},
-        {"url": "https://api.yourdomain.com", "description": "Production server"}
-    ]
-    
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
 
-app.openapi = custom_openapi
-
+# Application runner
 if __name__ == "__main__":
-    import uvicorn
+    # Configure uvicorn logging
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(client_addr)s - %(request_line)s - %(status_code)s"
     
-    # Development server configuration
+    # Run the application
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
-        port=8000,
+        host=settings.HOST,
+        port=settings.PORT,
         reload=settings.ENVIRONMENT == "development",
-        log_level=settings.LOG_LEVEL.lower(),
+        log_config=log_config,
         access_log=True,
-        reload_dirs=["app"] if settings.ENVIRONMENT == "development" else None,
-        ssl_keyfile=None,  # Add SSL in production
-        ssl_certfile=None  # Add SSL in production
+        use_colors=True,
+        loop="asyncio",
+        workers=1 if settings.ENVIRONMENT == "development" else settings.WORKERS
     )
