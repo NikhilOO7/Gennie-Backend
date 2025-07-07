@@ -11,6 +11,7 @@ import uuid
 import json
 
 from app.database import Base
+from app.models.message import Message, SenderType
 
 class Chat(Base):
     """
