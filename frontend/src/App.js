@@ -1489,10 +1489,38 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
 
   const savePreferences = async () => {
     try {
-      console.log('Saving preferences:', preferences);
-      onClose();
+      const token = localStorage.getItem('access_token');
+      
+      // Map frontend fields to API fields
+      const apiPreferences = {
+        conversation_style: preferences.conversation_style,
+        response_length: preferences.response_length,
+        emotional_support_level: preferences.emotional_support
+      };
+      
+      const response = await fetch(`${API_BASE_URL}/ai/personalization`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(apiPreferences)
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Preferences saved:', data);
+        // Show success message to user
+        alert('Preferences saved successfully!');
+        onClose();
+      } else {
+        const error = await response.json();
+        console.error('Failed to save preferences:', error);
+        alert('Failed to save preferences. Please try again.');
+      }
     } catch (error) {
       console.error('Failed to save preferences:', error);
+      alert('An error occurred. Please try again.');
     }
   };
 
@@ -1583,7 +1611,7 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
               Response Length
             </label>
             <select
-              value={preferences.response_length}
+              value={preferences.preferred_response_length}
               onChange={(e) => setPreferences({ ...preferences, response_length: e.target.value })}
               style={{ ...styles.input, cursor: 'pointer' }}
             >
@@ -1598,7 +1626,7 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
               Emotional Support Level
             </label>
             <select
-              value={preferences.emotional_support}
+              value={preferences.emotional_support_level}
               onChange={(e) => setPreferences({ ...preferences, emotional_support: e.target.value })}
               style={{ ...styles.input, cursor: 'pointer' }}
             >

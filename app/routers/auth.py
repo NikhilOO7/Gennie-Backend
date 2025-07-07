@@ -19,6 +19,7 @@ import bcrypt
 from app.database import get_db, get_redis
 from app.models.user import User
 from app.config import settings
+from app.models.user_preference import UserPreference
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
@@ -365,6 +366,16 @@ async def register(
                 "client_ip": request.client.host if request.client else "unknown"
             }
         )
+
+        user_preferences = UserPreference(
+            user_id=user.id,
+            preferences=UserPreference.get_default_preferences(),
+            interaction_patterns={},
+            learning_data={},
+            features_enabled=UserPreference.get_default_features()
+        )
+        db.add(user_preferences)
+        await db.commit()
         
         # TODO: Send verification email in background task
         # background_tasks.add_task(send_verification_email, user.email, user.verification_token)

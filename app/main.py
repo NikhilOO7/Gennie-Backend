@@ -6,12 +6,14 @@ FastAPI application with comprehensive middleware, error handling, and lifecycle
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware as CompressionMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from contextlib import asynccontextmanager
 import logging
 import sys
+import uuid
 from datetime import datetime, timezone
 import uvicorn
 from typing import Dict, Any
@@ -44,7 +46,7 @@ app_info = {
     - Redis caching for improved performance
     - PostgreSQL for reliable data persistence
     """,
-    "version": "2.0.0",
+    "version": settings.APP_VERSION,
     "contact": {
         "name": "AI Chatbot Team",
         "email": "support@aichatbot.com",
@@ -177,13 +179,13 @@ app.add_middleware(
 # Add logging middleware
 app.add_middleware(LoggingMiddleware)
 
-# Include routers
+# Include routers with correct prefixes - FIX HERE
 app.include_router(auth, prefix="/api/v1/auth", tags=["Authentication"])
-app.include_router(users, prefix="/api/v1/users", tags=["Users"])
+app.include_router(users, prefix="/api/v1", tags=["Users"])  # Changed to include /api/v1
 app.include_router(chat, prefix="/api/v1/chat", tags=["Chat"])
 app.include_router(ai, prefix="/api/v1/ai", tags=["AI"])
 app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
-app.include_router(health, prefix="/health", tags=["Health"])
+app.include_router(health, prefix="/api/v1", tags=["Health"])  # Changed to include /api/v1
 
 # Root endpoint
 @app.get("/", include_in_schema=False)
@@ -198,7 +200,7 @@ async def root():
         "endpoints": {
             "docs": "/docs" if settings.ENVIRONMENT != "production" else None,
             "redoc": "/redoc" if settings.ENVIRONMENT != "production" else None,
-            "health": "/health",
+            "health": "/api/v1/health",
             "api": "/api/v1"
         }
     }
@@ -270,7 +272,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     """Add request ID to each request for tracking"""
-    import uuid
     request_id = str(uuid.uuid4())
     
     # Add to request state
@@ -284,46 +285,26 @@ async def add_request_id(request: Request, call_next):
     
     return response
 
-# Performance monitoring endpoint (only in non-production)
-if settings.ENVIRONMENT != "production":
-    @app.get("/debug/performance", include_in_schema=False)
-    async def performance_metrics():
-        """Get application performance metrics"""
-        import psutil
-        import os
-        
-        process = psutil.Process(os.getpid())
-        
-        return {
-            "cpu": {
-                "percent": process.cpu_percent(interval=0.1),
-                "count": psutil.cpu_count()
-            },
-            "memory": {
-                "rss": process.memory_info().rss / 1024 / 1024,  # MB
-                "vms": process.memory_info().vms / 1024 / 1024,  # MB
-                "percent": process.memory_percent()
-            },
-            "connections": len(process.connections()),
-            "threads": process.num_threads(),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-
-# Application runner
-if __name__ == "__main__":
-    # Configure uvicorn logging
-    log_config = uvicorn.config.LOGGING_CONFIG
-    log_config["formatters"]["access"]["fmt"] = "%(asctime)s - %(client_addr)s - %(request_line)s - %(status_code)s"
+# Custom middleware for process time tracking
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    """Add process time header to responses"""
+    import time
+    start_time = time.time()
     
-    # Run the application
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    
+    return response
+
+# Run the application
+if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
+        host="0.0.0.0",
+        port=8000,
         reload=settings.ENVIRONMENT == "development",
-        log_config=log_config,
-        access_log=True,
-        use_colors=True,
-        loop="asyncio",
-        workers=1 if settings.ENVIRONMENT == "development" else settings.WORKERS
+        log_level="info"
     )

@@ -32,6 +32,93 @@ from app.services.rag_service import rag_service
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+class PreferencesUpdate(BaseModel):
+    """Model for updating user preferences"""
+    conversation_style: Optional[str] = Field(None, pattern="^(friendly|formal|casual|professional)$")
+    response_length: Optional[str] = Field(None, pattern="^(short|medium|long)$") 
+    emotional_support_level: Optional[str] = Field(None, pattern="^(minimal|standard|high)$")
+    humor_level: Optional[str] = Field(None, pattern="^(none|light|moderate|high)$")
+    formality_level: Optional[str] = Field(None, pattern="^(very_casual|casual|neutral|formal|very_formal)$")
+    technical_level: Optional[str] = Field(None, pattern="^(beginner|intermediate|advanced|expert)$")
+    language: Optional[str] = None
+    timezone: Optional[str] = None
+    interests: Optional[List[str]] = None
+    avoid_topics: Optional[List[str]] = None
+
+# Add this endpoint after the GET /personalization endpoint
+@router.put("/personalization", response_model=Dict[str, Any])
+async def update_personalization_preferences(
+    preferences_update: PreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: Redis = Depends(get_redis)
+):
+    """Update user personalization preferences"""
+    
+    try:
+        # Get or create user preference record
+        result = await db.execute(
+            select(UserPreference).where(UserPreference.user_id == current_user.id)
+        )
+        user_pref = result.scalar_one_or_none()
+        
+        if not user_pref:
+            # Create new preference record
+            user_pref = UserPreference(
+                user_id=current_user.id,
+                preferences={},
+                interaction_patterns={},
+                learning_data={},
+                features_enabled=UserPreference.get_default_features()
+            )
+            db.add(user_pref)
+        
+        # Update preferences with new values
+        update_data = preferences_update.dict(exclude_unset=True)
+        
+        # Map frontend field names to model field names
+        field_mapping = {
+            'emotional_support_level': 'emotional_support_level',
+            'response_length': 'preferred_response_length',
+            'conversation_style': 'conversation_style'
+        }
+        
+        for frontend_key, value in update_data.items():
+            if value is not None:
+                # Use mapped key if available, otherwise use original
+                model_key = field_mapping.get(frontend_key, frontend_key)
+                user_pref.set_preference(model_key, value)
+        
+        # Update last interaction timestamp
+        user_pref.last_interaction_at = datetime.now(timezone.utc)
+        
+        # Commit changes
+        await db.commit()
+        await db.refresh(user_pref)
+        
+        # Clear cached preferences
+        if redis_client:
+            cache_key = f"user_preferences:{current_user.id}"
+            await redis_client.delete(cache_key)
+            # Note: Removed the cache_user_preferences call since it doesn't exist
+            # The preferences are already saved in the database
+        
+        logger.info(f"Updated preferences for user {current_user.id}")
+        
+        return {
+            "success": True,
+            "message": "Preferences updated successfully",
+            "preferences": user_pref.preferences,
+            "last_updated": user_pref.updated_at.isoformat() if user_pref.updated_at else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to update preferences: {str(e)}", exc_info=True)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update preferences"
+        )
 # Request/Response Models
 class ChatRequest(BaseModel):
     """Chat request model"""
