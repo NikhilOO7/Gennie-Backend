@@ -571,104 +571,133 @@ class PersonalizationService:
         }
     
     async def generate_personalized_system_prompt(
-    self, 
-    user_preferences: Dict[str, Any], 
-    context: Optional[Dict[str, Any]] = None
-) -> str:
+        self, 
+        user_preferences: Dict[str, Any], 
+        context: Optional[Dict[str, Any]] = None
+    ) -> str:
         """Generate personalized system prompt based on user preferences"""
         
         base_prompt = "You are a helpful AI assistant. "
         
-        # Add conversation style instructions
-        conv_style = user_preferences.get("conversation_style", {})
-        style = conv_style.get("style", "balanced")
-        confidence = conv_style.get("confidence", 0.0)
+        # Check if preferences are in simple format or complex format
+        is_simple_format = isinstance(user_preferences.get("conversation_style"), str)
         
-        if confidence > 0.5:  # Only apply strong preferences
-            if style == "casual":
-                base_prompt += "Keep your responses conversational and friendly. Use casual language and feel free to use appropriate humor. "
-            elif style == "analytical":
-                base_prompt += "Provide detailed, analytical responses with logical reasoning. Break down complex topics systematically. "
-            elif style == "inquisitive":
-                base_prompt += "Be thorough in your explanations and ask clarifying questions when helpful. Show curiosity about the topic. "
-            elif style == "detailed":
-                base_prompt += "Provide comprehensive, detailed responses with examples and thorough explanations. "
+        if is_simple_format:
+            # Handle simple format (from database)
+            
+            # Conversation style
+            style = user_preferences.get("conversation_style", "friendly")
+            if style == "friendly":
+                base_prompt += "Be warm, approachable, and conversational in your responses. "
+            elif style == "formal":
+                base_prompt += "Maintain a professional and formal tone in your responses. "
+            elif style == "casual":
+                base_prompt += "Keep your responses relaxed and casual, like talking to a friend. "
             elif style == "professional":
-                base_prompt += "Maintain a professional, business-appropriate tone. Be concise but thorough. "
+                base_prompt += "Provide expert-level, professional responses with clarity and precision. "
+            
+            # Response length - CRITICAL FOR SHORT RESPONSES
+            length = user_preferences.get("preferred_response_length", "medium")
+            if length == "short":
+                base_prompt += "CRITICAL: Keep ALL responses extremely brief - maximum 2-3 sentences total. Never use numbered lists, bullet points, or multiple paragraphs. Give one direct, concise answer. Do not provide multiple suggestions or steps. "
+            elif length == "medium":
+                base_prompt += "Provide balanced responses with appropriate detail. "
+            elif length == "long":
+                base_prompt += "Provide detailed, comprehensive responses with examples, multiple perspectives, and thorough explanations. "
+            
+            # Emotional support level
+            support = user_preferences.get("emotional_support_level", "standard")
+            if support == "high":
+                base_prompt += "Show extra empathy and emotional support in your responses. Be very understanding and caring. "
+            elif support == "minimal":
+                base_prompt += "Focus on factual information with minimal emotional content. "
+            
+            # Technical level
+            tech_level = user_preferences.get("technical_level", "intermediate")
+            if tech_level == "beginner":
+                base_prompt += "Explain things in simple terms, avoiding jargon. "
+            elif tech_level == "expert":
+                base_prompt += "You can use technical terminology and assume advanced knowledge. "
+            
+            # Humor level
+            humor = user_preferences.get("humor_level", "moderate")
+            if humor == "high":
+                base_prompt += "Feel free to use humor and be playful when appropriate. "
+            elif humor == "none":
+                base_prompt += "Maintain a serious tone without humor. "
+                
+        else:
+            # Handle complex format (from personalization analysis)
+            
+            # Conversation style
+            conv_style = user_preferences.get("conversation_style", {})
+            style = conv_style.get("style", "balanced")
+            confidence = conv_style.get("confidence", 0.0)
+            
+            if confidence > 0.5:  # Only apply strong preferences
+                if style == "casual":
+                    base_prompt += "Keep your responses conversational and friendly. Use casual language and feel free to use appropriate humor. "
+                elif style == "analytical":
+                    base_prompt += "Provide detailed, analytical responses with logical reasoning. Break down complex topics systematically. "
+                elif style == "supportive":
+                    base_prompt += "Be especially warm, understanding, and supportive in your responses. "
+            
+            # Response length preference - CRITICAL FOR SHORT RESPONSES
+            length_pref = user_preferences.get("response_length", {})
+            length = length_pref.get("preference", "medium")
+            length_confidence = length_pref.get("confidence", 0.0)
+            
+            if length == "short":  # Apply regardless of confidence for short
+                base_prompt += "CRITICAL: Keep ALL responses extremely brief - maximum 2-3 sentences total. Never use numbered lists, bullet points, or multiple paragraphs. Give one direct, concise answer. Do not provide multiple suggestions or steps. "
+            elif length_confidence > 0.5:
+                if length == "long":
+                    base_prompt += "Provide comprehensive, detailed responses. "
+            
+            # Technical level
+            tech_pref = user_preferences.get("technical_level", {})
+            tech_level = tech_pref.get("level", "intermediate")
+            tech_confidence = tech_pref.get("confidence", 0.0)
+            
+            if tech_confidence > 0.5:
+                if tech_level == "beginner":
+                    base_prompt += "Explain concepts in simple, easy-to-understand terms. Avoid technical jargon. "
+                elif tech_level == "expert":
+                    base_prompt += "You can use advanced technical terminology and assume deep knowledge of the subject. "
+            
+            # Formality preference
+            formality = user_preferences.get("formality", {})
+            formality_level = formality.get("level", "neutral")
+            formality_confidence = formality.get("confidence", 0.0)
+            
+            if formality_confidence > 0.5:
+                if formality_level in ["very_casual", "casual"]:
+                    base_prompt += "Use informal, relaxed language. "
+                elif formality_level in ["formal", "very_formal"]:
+                    base_prompt += "Maintain a formal, professional tone. "
+            
+            # Creativity preference
+            creativity = user_preferences.get("creativity", {})
+            creativity_level = creativity.get("level", "moderate")
+            creativity_confidence = creativity.get("confidence", 0.0)
+            
+            if creativity_confidence > 0.5:
+                if creativity_level == "low":
+                    base_prompt += "Stick to facts and conventional approaches. "
+                elif creativity_level == "high":
+                    base_prompt += "Be creative and think outside the box in your responses. "
+            
+            # Topic interests
+            topics = user_preferences.get("topics", {})
+            interests = topics.get("interests", {})
+            
+            if interests:
+                top_interests = sorted(interests.items(), key=lambda x: x[1], reverse=True)[:3]
+                if top_interests:
+                    interest_names = [interest[0] for interest in top_interests if interest[1] > 0.3]
+                    if interest_names:
+                        base_prompt += f"The user is particularly interested in: {', '.join(interest_names)}. "
         
-        # Add response length preference
-        response_length = user_preferences.get("response_length", {})
-        length_pref = response_length.get("preference", "medium")
-        length_confidence = response_length.get("confidence", 0.0)
-        
-        if length_confidence > 0.5:
-            if length_pref == "short":
-                base_prompt += "Keep your responses brief and to the point. "
-            elif length_pref == "long":
-                base_prompt += "Provide detailed, comprehensive responses. "
-        
-        # Add technical level preference
-        tech_level = user_preferences.get("technical_level", {})
-        level = tech_level.get("level", "beginner")
-        tech_confidence = tech_level.get("confidence", 0.0)
-        
-        if tech_confidence > 0.5:
-            if level == "beginner":
-                base_prompt += "Explain concepts in simple terms, avoiding jargon when possible. "
-            elif level == "intermediate":
-                base_prompt += "You can use technical terms but explain them when first introduced. "
-            elif level == "expert":
-                base_prompt += "Feel free to use technical terminology and assume advanced knowledge. "
-        
-        # Add formality preference
-        formality = user_preferences.get("formality", {})
-        formality_level = formality.get("level", "neutral")
-        formality_confidence = formality.get("confidence", 0.0)
-        
-        if formality_confidence > 0.5:
-            if formality_level == "casual":
-                base_prompt += "Use a relaxed, informal tone. "
-            elif formality_level == "formal":
-                base_prompt += "Maintain a formal, respectful tone throughout. "
-        
-        # Add creativity preference
-        creativity = user_preferences.get("creativity", {})
-        creativity_level = creativity.get("level", "moderate")
-        creativity_confidence = creativity.get("confidence", 0.0)
-        
-        if creativity_confidence > 0.5:
-            if creativity_level == "low":
-                base_prompt += "Stick to facts and conventional approaches. "
-            elif creativity_level == "high":
-                base_prompt += "Be creative and think outside the box in your responses. "
-        
-        # Add topic interests
-        topics = user_preferences.get("topics", {})
-        interests = topics.get("interests", {})
-        
-        if interests:
-            top_interests = sorted(interests.items(), key=lambda x: x[1], reverse=True)[:3]
-            if top_interests:
-                interest_names = [interest[0] for interest in top_interests if interest[1] > 0.3]
-                if interest_names:
-                    base_prompt += f"The user is particularly interested in: {', '.join(interest_names)}. "
-        
-        # Add temporal patterns
-        temporal = user_preferences.get("temporal_patterns", {})
-        patterns = temporal.get("patterns", {})
-        
-        current_hour = datetime.now().hour
-        time_period = "morning" if 6 <= current_hour < 12 else \
-                    "afternoon" if 12 <= current_hour < 18 else \
-                    "evening" if 18 <= current_hour < 24 else "night"
-        
-        if time_period in patterns and patterns[time_period] > 0.5:
-            if time_period == "morning":
-                base_prompt += "Good morning! "
-            elif time_period == "evening":
-                base_prompt += "Good evening! "
-        
-        # Add emotion context if available
+        # Add emotion context if available (works for both formats)
         if context and context.get("emotion"):
             emotion = context["emotion"]
             if emotion in ["sadness", "fear", "anger"]:
@@ -676,7 +705,7 @@ class PersonalizationService:
             elif emotion in ["joy", "excitement"]:
                 base_prompt += "The user seems to be in a positive mood. Match their energy appropriately. "
         
-        # Add context awareness
+        # Add RAG context awareness (works for both formats)
         if context and context.get("rag_context"):
             base_prompt += "You have access to relevant context from previous conversations. Use this context to provide more personalized and informed responses. "
         

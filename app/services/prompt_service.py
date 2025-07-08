@@ -261,9 +261,11 @@ Analysis:"""
         # Response length preference
         length_pref = user_preferences.get("preferred_response_length", "medium")
         if length_pref == "short":
-            adaptations.append("Keep responses concise and to the point.")
+            adaptations.append("Keep responses very brief - maximum 2-3 sentences unless explicitly asked for more.")
+        elif length_pref == "medium":
+            adaptations.append("Provide balanced responses with appropriate detail.")
         elif length_pref == "long":
-            adaptations.append("Provide detailed, comprehensive responses with examples.")
+            adaptations.append("Provide detailed, comprehensive responses with examples and thorough explanations.")
         
         # Conversation style
         style = user_preferences.get("conversation_style", "friendly")
