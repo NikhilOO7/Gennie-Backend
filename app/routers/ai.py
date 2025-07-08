@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Back
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, update, func
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field, validator
@@ -15,6 +16,7 @@ from redis.asyncio import Redis
 import json
 import asyncio
 
+from app.config import settings
 from app.database import get_db, get_redis
 from app.models.user import User
 from app.models.chat import Chat
@@ -63,15 +65,17 @@ async def update_personalization_preferences(
         user_pref = result.scalar_one_or_none()
         
         if not user_pref:
-            # Create new preference record
+            # Create new preference record with DEFAULT preferences
             user_pref = UserPreference(
-                user_id=current_user.id,
-                preferences={},
-                interaction_patterns={},
-                learning_data={},
-                features_enabled=UserPreference.get_default_features()
+                user_id=current_user.id
+                # Don't pass empty dicts - let __init__ set defaults
             )
             db.add(user_pref)
+            await db.flush()  # Ensure object is persisted and has defaults
+        
+        # Make sure preferences is not None
+        if user_pref.preferences is None:
+            user_pref.preferences = UserPreference.get_default_preferences()
         
         # Update preferences with new values
         update_data = preferences_update.dict(exclude_unset=True)
@@ -83,14 +87,28 @@ async def update_personalization_preferences(
             'conversation_style': 'conversation_style'
         }
         
+        # Log the update for debugging
+        logger.info(f"Updating preferences for user {current_user.id}: {update_data}")
+        
+        # Create a copy of current preferences to modify
+        updated_preferences = user_pref.preferences.copy()
+        
         for frontend_key, value in update_data.items():
             if value is not None:
                 # Use mapped key if available, otherwise use original
                 model_key = field_mapping.get(frontend_key, frontend_key)
-                user_pref.set_preference(model_key, value)
+                updated_preferences[model_key] = value
+                logger.info(f"Set preference {model_key} = {value}")
         
-        # Update last interaction timestamp
+        # Reassign the entire preferences dict to trigger SQLAlchemy change detection
+        user_pref.preferences = updated_preferences
+        
+        # Alternative method: explicitly flag the field as modified
+        flag_modified(user_pref, 'preferences')
+        
+        # Update timestamps
         user_pref.last_interaction_at = datetime.now(timezone.utc)
+        user_pref.updated_at = datetime.now(timezone.utc)
         
         # Commit changes
         await db.commit()
@@ -100,10 +118,9 @@ async def update_personalization_preferences(
         if redis_client:
             cache_key = f"user_preferences:{current_user.id}"
             await redis_client.delete(cache_key)
-            # Note: Removed the cache_user_preferences call since it doesn't exist
-            # The preferences are already saved in the database
+            logger.info(f"Cleared cache for user {current_user.id}")
         
-        logger.info(f"Updated preferences for user {current_user.id}")
+        logger.info(f"Successfully updated preferences for user {current_user.id}: {user_pref.preferences}")
         
         return {
             "success": True,
@@ -119,6 +136,8 @@ async def update_personalization_preferences(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update preferences"
         )
+
+
 # Request/Response Models
 class ChatRequest(BaseModel):
     """Chat request model"""
@@ -413,28 +432,66 @@ async def build_conversation_context(
     emotion_context: Optional[Dict[str, Any]] = None,
     rag_context: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, str]]:
-    """Build conversation context with prompt service"""
+    """Build conversation context with personalization, emotion detection, and RAG"""
     
     messages = []
     
-    # Get conversation history from RAG context if available
+    # Get conversation history
     conversation_history = []
-    if rag_context and rag_context.get("context_messages"):
-        conversation_history = rag_context["context_messages"]
+    if chat.messages:
+        # Sort messages by timestamp and take last N messages
+        sorted_messages = sorted(chat.messages, key=lambda x: x.created_at)
+        recent_messages = sorted_messages[-(settings.CONVERSATION_CONTEXT_WINDOW * 2):]
+        
+        for msg in recent_messages:
+            role = "user" if msg.sender_type == SenderType.USER else "assistant"
+            conversation_history.append({
+                "role": role,
+                "content": msg.content
+            })
     
-    # Use prompt service to get appropriate system prompt
-    system_prompt = prompt_service.get_prompt_for_context(
-        user_message="",  # Will be added later
-        conversation_history=conversation_history,
-        user_preferences=user_preferences,
-        detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
-    )
+    # Generate personalized system prompt if preferences are available
+    if user_preferences:
+        # Use the personalization service to generate a truly personalized prompt
+        personalized_prompt = await personalization_service.generate_personalized_system_prompt(
+            user_preferences=user_preferences,
+            context={
+                "emotion": emotion_context.get("recent_emotion") if emotion_context else None,
+                "conversation_history": conversation_history,
+                "rag_context": rag_context is not None
+            }
+        )
+        
+        # Get additional context-based adjustments from prompt service
+        context_prompt = prompt_service.get_prompt_for_context(
+            user_message="",  # Will be added later
+            conversation_history=conversation_history,
+            user_preferences=user_preferences,
+            detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
+        )
+        
+        # Combine both prompts for maximum personalization
+        # The personalized prompt handles user preferences, while context prompt handles situation
+        system_prompt = f"{personalized_prompt}\n\n{context_prompt}"
+        
+    else:
+        # Fall back to standard prompt service if no personalization data
+        system_prompt = prompt_service.get_prompt_for_context(
+            user_message="",
+            conversation_history=conversation_history,
+            user_preferences=user_preferences,
+            detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
+        )
     
     # Add system prompt
     messages.append({"role": "system", "content": system_prompt})
     
     # Add RAG context messages if available
     if rag_context and rag_context.get("context_messages"):
+        # Add a context indicator to the system prompt
+        context_indicator = "\n\nRelevant context from previous conversations:"
+        messages[0]["content"] += context_indicator
+        
         for ctx_msg in rag_context["context_messages"][-5:]:  # Limit context
             role = "user" if ctx_msg.get("sender_type") == "USER" else "assistant"
             messages.append({
@@ -442,7 +499,11 @@ async def build_conversation_context(
                 "content": ctx_msg.get("content", "")
             })
     
+    # Add conversation history
+    messages.extend(conversation_history)
+    
     return messages
+
 
 async def update_user_preferences(
     user_id: int,
@@ -842,8 +903,12 @@ async def get_personalization_info(
             
             if user_pref:
                 preferences = user_pref.preferences
+                # If preferences are empty, use defaults
+                if not preferences:
+                    preferences = UserPreference.get_default_preferences()
             else:
-                preferences = {}
+                # Return default preferences if no record exists
+                preferences = UserPreference.get_default_preferences()
         
         # Get interaction stats
         message_count_result = await db.execute(
@@ -868,7 +933,7 @@ async def get_personalization_info(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve personalization information"
         )
-
+    
 # Template-based chat endpoint
 @router.post("/chat/template", response_model=ChatResponse)
 async def chat_with_template(

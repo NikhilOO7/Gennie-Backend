@@ -25,7 +25,7 @@ import {
   MicOff,
   Brain,
   Database
-} from 'lucide-react';
+} from 'lucide-react'; 
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 const WS_BASE_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/api/v1';
@@ -1463,8 +1463,10 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
   const [preferences, setPreferences] = useState({
     conversation_style: 'friendly',
     response_length: 'medium',
-    emotional_support: 'standard'
+    emotional_support_level: 'standard'  // Changed from 'emotional_support'
   });
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
 
   useEffect(() => {
     fetchPreferences();
@@ -1478,8 +1480,13 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
       });
       if (response.ok) {
         const data = await response.json();
-        if (data.preferences) {
-          setPreferences(data.preferences);
+        if (data.preferences && Object.keys(data.preferences).length > 0) {
+          // Map backend preferences to frontend state
+          setPreferences({
+            conversation_style: data.preferences.conversation_style || 'friendly',
+            response_length: data.preferences.preferred_response_length || 'medium',
+            emotional_support_level: data.preferences.emotional_support_level || 'standard'
+          });
         }
       }
     } catch (error) {
@@ -1488,170 +1495,98 @@ const SettingsModal = ({ user, onClose, darkMode }) => {
   };
 
   const savePreferences = async () => {
+    setLoading(true);
+    setMessage('');
+    
     try {
       const token = localStorage.getItem('access_token');
       
-      // Map frontend fields to API fields
-      const apiPreferences = {
-        conversation_style: preferences.conversation_style,
-        response_length: preferences.response_length,
-        emotional_support_level: preferences.emotional_support
-      };
-      
+      // Send preferences with correct field names
       const response = await fetch(`${API_BASE_URL}/ai/personalization`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(apiPreferences)
+        body: JSON.stringify(preferences)  // Send the preferences object directly
       });
       
       if (response.ok) {
         const data = await response.json();
         console.log('Preferences saved:', data);
-        // Show success message to user
-        alert('Preferences saved successfully!');
-        onClose();
+        setMessage('Preferences saved successfully!');
+        // Close modal after a short delay
+        setTimeout(() => {
+          onClose();
+        }, 1500);
       } else {
         const error = await response.json();
         console.error('Failed to save preferences:', error);
-        alert('Failed to save preferences. Please try again.');
+        setMessage('Failed to save preferences. Please try again.');
       }
     } catch (error) {
       console.error('Failed to save preferences:', error);
-      alert('An error occurred. Please try again.');
+      setMessage('An error occurred. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-      zIndex: 1000
-    }}>
-      <div style={{
-        ...styles.card,
-        width: '90%',
-        maxWidth: '500px',
-        maxHeight: '80vh',
-        overflow: 'auto'
-      }}>
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '24px'
-        }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>Settings</h2>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#6b7280'
-            }}
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <h2>Settings</h2>
+        
+        <div className="preference-section">
+          <label>Conversation Style</label>
+          <select
+            value={preferences.conversation_style}
+            onChange={(e) => setPreferences({...preferences, conversation_style: e.target.value})}
+            disabled={loading}
           >
-            <X size={24} />
-          </button>
+            <option value="friendly">Friendly</option>
+            <option value="formal">Formal</option>
+            <option value="casual">Casual</option>
+            <option value="professional">Professional</option>
+          </select>
         </div>
 
-        <div style={{ marginBottom: '24px' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '12px' }}>
-            User Profile
-          </h3>
-          <div style={{
-            padding: '16px',
-            backgroundColor: '#f3f4f6',
-            borderRadius: '8px'
-          }}>
-            <p style={{ marginBottom: '8px' }}>
-              <strong>Username:</strong> {user?.username}
-            </p>
-            <p style={{ marginBottom: '8px' }}>
-              <strong>Email:</strong> {user?.email}
-            </p>
-            <p>
-              <strong>Member Since:</strong> {new Date(user?.created_at).toLocaleDateString()}
-            </p>
-          </div>
+        <div className="preference-section">
+          <label>Response Length</label>
+          <select
+            value={preferences.response_length}
+            onChange={(e) => setPreferences({...preferences, response_length: e.target.value})}
+            disabled={loading}
+          >
+            <option value="short">Short</option>
+            <option value="medium">Medium</option>
+            <option value="long">Long</option>
+          </select>
         </div>
 
-        <div style={{ marginBottom: '24px' }}>
-          <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '12px' }}>
-            Conversation Preferences
-          </h3>
-          
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px', fontWeight: '500' }}>
-              Conversation Style
-            </label>
-            <select
-              value={preferences.conversation_style}
-              onChange={(e) => setPreferences({ ...preferences, conversation_style: e.target.value })}
-              style={{ ...styles.input, cursor: 'pointer' }}
-            >
-              <option value="friendly">Friendly</option>
-              <option value="professional">Professional</option>
-              <option value="casual">Casual</option>
-              <option value="formal">Formal</option>
-            </select>
-          </div>
-
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px', fontWeight: '500' }}>
-              Response Length
-            </label>
-            <select
-              value={preferences.preferred_response_length}
-              onChange={(e) => setPreferences({ ...preferences, response_length: e.target.value })}
-              style={{ ...styles.input, cursor: 'pointer' }}
-            >
-              <option value="short">Short & Concise</option>
-              <option value="medium">Medium</option>
-              <option value="detailed">Detailed & Comprehensive</option>
-            </select>
-          </div>
-
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px', fontWeight: '500' }}>
-              Emotional Support Level
-            </label>
-            <select
-              value={preferences.emotional_support_level}
-              onChange={(e) => setPreferences({ ...preferences, emotional_support: e.target.value })}
-              style={{ ...styles.input, cursor: 'pointer' }}
-            >
-              <option value="minimal">Minimal</option>
-              <option value="standard">Standard</option>
-              <option value="high">High Empathy</option>
-            </select>
-          </div>
+        <div className="preference-section">
+          <label>Emotional Support Level</label>
+          <select
+            value={preferences.emotional_support_level}
+            onChange={(e) => setPreferences({...preferences, emotional_support_level: e.target.value})}
+            disabled={loading}
+          >
+            <option value="minimal">Minimal</option>
+            <option value="standard">Standard</option>
+            <option value="high">High</option>
+          </select>
         </div>
 
-        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-          <button
-            onClick={onClose}
-            style={{
-              ...styles.button,
-              backgroundColor: '#6b7280'
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={savePreferences}
-            style={styles.button}
-          >
-            Save Changes
+        {message && (
+          <div className={`message ${message.includes('success') ? 'success' : 'error'}`}>
+            {message}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button onClick={onClose} disabled={loading}>Cancel</button>
+          <button onClick={savePreferences} disabled={loading}>
+            {loading ? 'Saving...' : 'Save Preferences'}
           </button>
         </div>
       </div>
@@ -1973,6 +1908,161 @@ style.textContent = `
   
   ::-webkit-scrollbar-thumb:hover {
     background: #9ca3af;
+  }
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+  }
+
+  .modal-content {
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  }
+
+  .dark-mode .modal-content {
+    background: #2d2d2d;
+    color: #e0e0e0;
+  }
+
+  .modal-content h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #333;
+  }
+
+  .dark-mode .modal-content h2 {
+    color: #e0e0e0;
+  }
+
+  .preference-section {
+    margin-bottom: 20px;
+  }
+
+  .preference-section label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: #555;
+  }
+
+  .dark-mode .preference-section label {
+    color: #b0b0b0;
+  }
+
+  .preference-section select {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    background: white;
+    color: #333;
+    cursor: pointer;
+  }
+
+  .dark-mode .preference-section select {
+    background: #3d3d3d;
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .preference-section select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .message {
+    padding: 12px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 14px;
+  }
+
+  .message.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+  }
+
+  .message.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+  }
+
+  .dark-mode .message.success {
+    background-color: #1e4620;
+    color: #90ee90;
+    border-color: #2e5f30;
+  }
+
+  .dark-mode .message.error {
+    background-color: #5a1e1e;
+    color: #ff6b6b;
+    border-color: #7a2e2e;
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  .modal-actions button {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+
+  .modal-actions button:first-child {
+    background: #e0e0e0;
+    color: #333;
+  }
+
+  .modal-actions button:first-child:hover {
+    background: #d0d0d0;
+  }
+
+  .modal-actions button:last-child {
+    background: #007bff;
+    color: white;
+  }
+
+  .modal-actions button:last-child:hover {
+    background: #0056b3;
+  }
+
+  .modal-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .dark-mode .modal-actions button:first-child {
+    background: #4a4a4a;
+    color: #e0e0e0;
+  }
+
+  .dark-mode .modal-actions button:first-child:hover {
+    background: #5a5a5a;
   }
 `;
 document.head.appendChild(style);

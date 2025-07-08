@@ -5,6 +5,8 @@ User Preference Model - User personalization and preferences
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.orm import object_session
+from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import enum
@@ -150,8 +152,15 @@ class UserPreference(Base):
         """Set a specific preference value"""
         keys = key.split('.')
         
+        # Make a copy of preferences to ensure we're working with a dict
+        if self.preferences is None:
+            self.preferences = {}
+        
+        # Create a copy to modify
+        preferences_copy = self.preferences.copy()
+        
         # Navigate to the nested key
-        current = self.preferences
+        current = preferences_copy
         for k in keys[:-1]:
             if k not in current:
                 current[k] = {}
@@ -159,6 +168,15 @@ class UserPreference(Base):
         
         # Set the value
         current[keys[-1]] = value
+        
+        # Reassign the entire dict to trigger change detection
+        self.preferences = preferences_copy
+        
+        # Also explicitly flag as modified for extra safety
+        session = object_session(self)
+        if session:
+            flag_modified(self, 'preferences')
+        
         self.updated_at = datetime.now(timezone.utc)
     
     def get_pattern(self, pattern_type: str) -> Any:
