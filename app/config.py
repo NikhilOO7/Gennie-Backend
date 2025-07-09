@@ -59,7 +59,13 @@ class Settings(BaseModel):
     REDIS_SOCKET_TIMEOUT: int = 5
     REDIS_CONNECTION_TIMEOUT: int = 5
     
-    # OpenAI Settings
+    # Google Cloud Configuration (Gemini)
+    GOOGLE_CLOUD_PROJECT_ID: str = os.getenv("GOOGLE_CLOUD_PROJECT_ID", "")
+    GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./credentials.json")
+    GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    GEMINI_API_KEY: Optional[SecretStr] = SecretStr(os.getenv("GEMINI_API_KEY", "")) if os.getenv("GEMINI_API_KEY") else None
+    
+    # OpenAI Settings (kept for backward compatibility and configuration reuse)
     OPENAI_API_KEY: SecretStr = SecretStr(os.getenv("OPENAI_API_KEY", "your-openai-api-key"))
     OPENAI_MODEL: str = "gpt-3.5-turbo"
     OPENAI_TEMPERATURE: float = 0.7
@@ -69,6 +75,11 @@ class Settings(BaseModel):
     OPENAI_PRESENCE_PENALTY: float = 0.0
     OPENAI_TIMEOUT: int = 30
     OPENAI_MAX_RETRIES: int = 3
+    
+    # Audio Settings
+    MAX_AUDIO_SIZE_MB: int = 10
+    SUPPORTED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "webm", "ogg", "m4a"]
+    AUDIO_SAMPLE_RATE: int = 16000
     
     # Embeddings Settings
     EMBEDDINGS_MODEL: str = "text-embedding-ada-002"
@@ -83,11 +94,11 @@ class Settings(BaseModel):
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_REQUESTS: int = 100
-    RATE_LIMIT_WINDOW: int = 60  # seconds
+    RATE_LIMIT_WINDOW: int = 60
     RATE_LIMIT_STORAGE: str = "redis"
     
     # File Upload Settings
-    MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
+    MAX_FILE_SIZE: int = 10485760  # 10MB
     ALLOWED_FILE_TYPES: List[str] = [".txt", ".pdf", ".docx", ".md"]
     UPLOAD_DIR: str = "uploads"
     
@@ -97,8 +108,8 @@ class Settings(BaseModel):
     HEALTH_CHECK_INTERVAL: int = 30
     
     # WebSocket Settings
-    WEBSOCKET_TIMEOUT: int = 600  # 10 minutes
-    WEBSOCKET_MAX_SIZE: int = 1024 * 1024  # 1MB
+    WEBSOCKET_TIMEOUT: int = 600
+    WEBSOCKET_MAX_SIZE: int = 1048576
     WEBSOCKET_PING_INTERVAL: int = 30
     WEBSOCKET_PING_TIMEOUT: int = 10
     
@@ -109,7 +120,7 @@ class Settings(BaseModel):
     
     # Personalization Settings
     PERSONALIZATION_ENABLED: bool = True
-    PERSONALIZATION_CACHE_TTL: int = 3600  # 1 hour
+    PERSONALIZATION_CACHE_TTL: int = 3600
     MIN_INTERACTIONS_FOR_PERSONALIZATION: int = 5
     
     # Background Tasks Settings
@@ -120,10 +131,10 @@ class Settings(BaseModel):
     
     # Caching Settings
     CACHE_ENABLED: bool = True
-    CACHE_DEFAULT_TTL: int = 300  # 5 minutes
+    CACHE_DEFAULT_TTL: int = 300
     CACHE_MAX_SIZE: int = 1000
     
-    # Email Settings (for notifications)
+    # Email Settings (Optional)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587
     SMTP_USERNAME: Optional[str] = None
@@ -134,14 +145,29 @@ class Settings(BaseModel):
     # Testing Settings
     TESTING: bool = False
     TEST_DATABASE_URL: Optional[str] = None
+    TEST_REDIS_URL: Optional[str] = None
+    
+    # Logging Settings
+    LOG_JSON_FORMAT: bool = False
+    LOG_FILE_ENABLED: bool = True
+    LOG_FILE_PATH: str = "logs/app.log"
+    LOG_FILE_MAX_SIZE: int = 10485760  # 10MB
+    LOG_FILE_BACKUP_COUNT: int = 5
+    
+    # Advanced Settings
+    WORKER_CLASS: str = "uvicorn.workers.UvicornWorker"
+    RATE_LIMIT_PER_MINUTE: int = 60
+    CONNECTION_POOL_MAX_SIZE: int = 100
+    REQUEST_TIMEOUT: int = 60
+    SLOW_REQUEST_THRESHOLD: float = 5.0
     
     class Config:
+        """Pydantic configuration"""
         env_file = ".env"
-        env_file_encoding = "utf-8"
         case_sensitive = True
-        # Allow extra fields for forward compatibility
-        extra = "ignore"
+        use_enum_values = True
     
+    # Validators
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         """Validate environment setting"""
@@ -178,6 +204,21 @@ class Settings(BaseModel):
         """Validate Redis URL format"""
         if not v.startswith("redis://"):
             raise ValueError("REDIS_URL must start with redis://")
+        return v
+    
+    @validator("GOOGLE_CLOUD_PROJECT_ID")
+    def validate_gcp_project(cls, v):
+        """Validate Google Cloud Project ID"""
+        if v and not v.strip():
+            raise ValueError("GOOGLE_CLOUD_PROJECT_ID cannot be empty if provided")
+        return v
+    
+    @validator("GOOGLE_CLOUD_LOCATION")
+    def validate_gcp_location(cls, v):
+        """Validate Google Cloud Location"""
+        valid_locations = ["us-central1", "us-east1", "us-west1", "europe-west1", "europe-west4", "asia-northeast1"]
+        if v and v not in valid_locations:
+            logger.warning(f"Unusual GCP location: {v}. Common locations are: {valid_locations}")
         return v
     
     @validator("OPENAI_TEMPERATURE")
@@ -254,6 +295,12 @@ class Settings(BaseModel):
     def get_openai_api_key(self) -> str:
         """Get OpenAI API key as string"""
         return self.OPENAI_API_KEY.get_secret_value()
+    
+    def get_gemini_api_key(self) -> Optional[str]:
+        """Get Gemini API key as string"""
+        if self.GEMINI_API_KEY:
+            return self.GEMINI_API_KEY.get_secret_value()
+        return None
     
     def get_secret_key(self) -> str:
         """Get secret key as string"""
