@@ -1,9 +1,10 @@
 """
 AI Conversation Router - Core AI interaction endpoints
-comprehensive AI features, emotion detection, personalization, and RAG visualization
+comprehensive AI features using Gemini, emotion detection, personalization, and RAG visualization
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, and_, update, func
 from sqlalchemy.orm import selectinload
@@ -24,7 +25,7 @@ from app.models.message import Message, MessageType, SenderType
 from app.models.emotion import Emotion, EmotionType
 from app.models.user_preference import UserPreference
 from app.routers.auth import get_current_user
-from app.services.openai_service import openai_service
+from app.services.gemini_service import gemini_service  # Using Gemini as primary AI service
 from app.services.emotion_service import emotion_service
 from app.services.personalization import personalization_service
 from app.services.prompt_service import prompt_service
@@ -143,6 +144,112 @@ def transform_simple_preferences_to_personalization_format(simple_prefs: Dict[st
     return transformed
 
 
+async def build_conversation_context(
+    chat: Chat,
+    user_preferences: Optional[Dict[str, Any]] = None,
+    emotion_context: Optional[Dict[str, Any]] = None,
+    rag_context: Optional[Dict[str, Any]] = None,
+    db: AsyncSession = None
+) -> List[Dict[str, str]]:
+    """Build conversation context with personalization, emotion detection, and RAG"""
+    
+    messages = []
+    
+    # Get conversation history
+    conversation_history = []
+    
+    # Handle messages properly to avoid lazy loading issues
+    try:
+        if hasattr(chat, 'messages') and chat.messages is not None:
+            # Messages are already loaded via selectinload
+            sorted_messages = sorted(chat.messages, key=lambda x: x.created_at)
+            recent_messages = sorted_messages[-(settings.CONVERSATION_CONTEXT_WINDOW * 2):]
+        elif chat.id and db:
+            # Existing chat but messages not loaded - fetch them
+            result = await db.execute(
+                select(Message)
+                .where(Message.chat_id == chat.id)
+                .order_by(Message.created_at)
+                .limit(settings.CONVERSATION_CONTEXT_WINDOW * 2)
+            )
+            recent_messages = result.scalars().all()
+        else:
+            # New chat - no messages yet
+            recent_messages = []
+            
+        for msg in recent_messages:
+            role = "user" if msg.sender_type == SenderType.USER else "assistant"
+            conversation_history.append({
+                "role": role,
+                "content": msg.content
+            })
+    except Exception as e:
+        logger.warning(f"Failed to load conversation history: {str(e)}")
+        conversation_history = []
+    
+    # Check if user has short response preference
+    has_short_preference = (user_preferences and 
+                          user_preferences.get("preferred_response_length") == "short")
+    
+    # Generate personalized system prompt if preferences are available
+    if user_preferences:
+        # Use the personalization service to generate a truly personalized prompt
+        personalized_prompt = await personalization_service.generate_personalized_system_prompt(
+            user_preferences=user_preferences,
+            context={
+                "emotion": emotion_context.get("recent_emotion") if emotion_context else None,
+                "conversation_history": conversation_history,
+                "rag_context": rag_context is not None
+            }
+        )
+        
+        # Log the personalized prompt for debugging
+        logger.info(f"Generated personalized system prompt: {personalized_prompt[:200]}...")
+        
+        # For short responses, use a simplified system prompt
+        if has_short_preference:
+            # Use ONLY the personalized prompt with strong brevity instructions
+            system_prompt = personalized_prompt
+        else:
+            # Get additional context-based adjustments from prompt service
+            context_prompt = prompt_service.get_prompt_for_context(
+                user_message="",  # Will be added later
+                conversation_history=conversation_history,
+                user_preferences=user_preferences,
+                detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
+            )
+            
+            # Combine both prompts for maximum personalization
+            system_prompt = f"{personalized_prompt}\n\n{context_prompt}"
+    else:
+        # Fall back to standard prompt service if no personalization data
+        system_prompt = prompt_service.get_prompt_for_context(
+            user_message="",
+            conversation_history=conversation_history,
+            user_preferences=user_preferences,
+            detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
+        )
+    
+    # Add STRONG brevity instruction at the END for short responses
+    if has_short_preference:
+        system_prompt += "\n\n[CRITICAL INSTRUCTION: You MUST keep your response to 2-3 sentences maximum. No lists, no multiple paragraphs, no detailed explanations. Be direct and concise. This is the most important instruction.]"
+    
+    # Add system prompt
+    messages.append({"role": "system", "content": system_prompt})
+    
+    # Add conversation history
+    messages.extend(conversation_history)
+    
+    # Add RAG context if available
+    if rag_context and rag_context.get("context_messages"):
+        rag_prompt = "Relevant context from previous conversations:\n"
+        for ctx in rag_context["context_messages"][:3]:  # Limit to 3 most relevant
+            rag_prompt += f"- {ctx['content'][:100]}...\n"
+        messages.append({"role": "system", "content": rag_prompt})
+    
+    return messages
+
+
 # Main chat endpoint
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_ai(
@@ -153,7 +260,7 @@ async def chat_with_ai(
     redis_client: Redis = Depends(get_redis)
 ):
     """
-    Main AI chat endpoint with emotion detection and personalization
+    Main AI chat endpoint with emotion detection and personalization using Gemini
     """
     
     try:
@@ -184,6 +291,9 @@ async def chat_with_ai(
             chat = Chat(
                 user_id=current_user.id,
                 title="New Chat",
+                ai_model="gemini-2.0-flash-001",  # Using Gemini model
+                temperature=0.7,
+                max_tokens=1000,
                 is_active=True
             )
             db.add(chat)
@@ -296,14 +406,33 @@ async def chat_with_ai(
         logger.info(f"Max tokens set to {max_tokens} based on preference: {response_length_pref}")
         
         # 8. Generate AI response
-        ai_response_data = await openai_service.generate_chat_response(
-            messages=conversation_messages,
-            temperature=chat.temperature,
-            max_tokens=max_tokens,
-            model=chat.ai_model,
-            stream=chat_request.stream,
-            user_id=str(current_user.id)
-        )
+        if chat_request.stream:
+            # Return streaming response
+            return StreamingResponse(
+                _stream_chat_response(
+                    messages=conversation_messages,
+                    chat=chat,
+                    user_message=user_message,
+                    db=db,
+                    redis_client=redis_client,
+                    current_user=current_user,
+                    emotion_data=emotion_data,
+                    rag_context_data=rag_context_data,
+                    start_time=start_time,
+                    max_tokens=max_tokens
+                ),
+                media_type="text/event-stream"
+            )
+        else:
+            # Non-streaming response
+            ai_response_data = await gemini_service.generate_chat_response(
+                messages=conversation_messages,
+                temperature=chat.temperature,
+                max_tokens=max_tokens,
+                model=chat.ai_model,
+                stream=False,
+                user_id=str(current_user.id)
+            )
         
         if not ai_response_data.get("success"):
             raise HTTPException(
@@ -320,7 +449,7 @@ async def chat_with_ai(
             chat_id=chat.id,
             content=ai_response,
             message_type=MessageType.TEXT,
-            sender_type=SenderType.ASSISTANT,
+            sender_type=SenderType.AI,
             tokens_used=token_usage.get("total_tokens", 0),
             processing_time=processing_time_ai,
             message_metadata={
@@ -333,23 +462,49 @@ async def chat_with_ai(
         )
         db.add(ai_message)
         
-        # 10. Update chat statistics
+        # 10. Analyze AI response emotion
+        ai_emotion_data = None
+        if chat_request.detect_emotion:
+            try:
+                ai_emotion_data = await emotion_service.analyze_emotion(ai_response)
+                if ai_emotion_data:
+                    # Store emotion analysis for AI message
+                    emotion_record = Emotion(
+                        user_id=current_user.id,
+                        chat_id=chat.id,
+                        message_id=ai_message.id,
+                        primary_emotion=EmotionType(ai_emotion_data["primary_emotion"]),
+                        confidence_score=ai_emotion_data.get("confidence", 0.5),
+                        sentiment_score=ai_emotion_data.get("sentiment_score", 0.0),
+                        detected_at=datetime.now(timezone.utc)
+                    )
+                    db.add(emotion_record)
+            except Exception as e:
+                logger.warning(f"AI response emotion analysis failed: {str(e)}")
+        
+        # 11. Update chat metadata
         chat.total_messages += 2
-        chat.total_tokens_used += token_usage.get("total_tokens", 0)
-        chat.update_activity()
+        chat.total_tokens_used += user_message.tokens_used + ai_message.tokens_used
+        chat.last_message_at = datetime.now(timezone.utc)
+        chat.updated_at = datetime.now(timezone.utc)
         
-        # 11. Update user statistics
-        current_user.total_messages += 2
-        current_user.total_tokens_used += token_usage.get("total_tokens", 0)
-        current_user.last_activity = datetime.now(timezone.utc)
+        # Update title if it's still default
+        if chat.title == "New Chat" and chat.auto_title_generation:
+            # Generate title in background
+            background_tasks.add_task(
+                generate_and_update_chat_title,
+                chat.id,
+                conversation_messages,
+                db
+            )
         
-        # 12. Update user preferences based on interaction
-        await update_user_preferences(
-            user_id=current_user.id,
-            message=chat_request.message,
-            response=ai_response,
-            emotion=emotion_data.get("primary_emotion") if emotion_data else None,
-            db=db
+        # 12. Update user statistics and preferences
+        background_tasks.add_task(
+            update_user_statistics_and_preferences,
+            current_user.id,
+            chat_request.message,
+            emotion_data.get("primary_emotion") if emotion_data else None,
+            db
         )
         
         # Commit all changes
@@ -358,32 +513,31 @@ async def chat_with_ai(
         # Calculate total processing time
         total_processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
-        # Prepare response
-        response_data = ChatResponse(
+        # 13. Return response
+        return ChatResponse(
             response=ai_response,
             message_id=ai_message.id,
             chat_id=chat.id,
-            emotion_analysis=emotion_data,
-            token_usage=token_usage,
+            emotion_analysis=ai_emotion_data,
+            token_usage={
+                "user_tokens": user_message.tokens_used,
+                "ai_tokens": ai_message.tokens_used,
+                "total_tokens": user_message.tokens_used + ai_message.tokens_used
+            },
             processing_time=total_processing_time,
             timestamp=datetime.now(timezone.utc).isoformat(),
             metadata={
-                "ai_model": ai_response_data.get("model_used", chat.ai_model),
-                "emotion_detected": emotion_data is not None,
                 "personalization_applied": user_preferences is not None,
-                "rag_context_used": rag_context_data is not None and len(rag_context_data.get("context_messages", [])) > 0,
-                "user_message_id": user_message.id
+                "rag_sources_used": len(rag_context_data.get("context_messages", [])) if rag_context_data else 0,
+                "emotion_detected": emotion_data is not None,
+                "response_length_preference": response_length_pref
             }
         )
-        
-        logger.info(f"Chat response generated for user {current_user.id} in {total_processing_time:.2f}s")
-        
-        return response_data
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chat endpoint error: {str(e)}", exc_info=True)
+        logger.error(f"Chat processing failed: {str(e)}", exc_info=True)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -391,209 +545,173 @@ async def chat_with_ai(
         )
 
 
-async def build_conversation_context(
+# Helper functions
+async def _stream_chat_response(
+    messages: List[Dict[str, str]],
     chat: Chat,
-    user_preferences: Optional[Dict[str, Any]] = None,
-    emotion_context: Optional[Dict[str, Any]] = None,
-    rag_context: Optional[Dict[str, Any]] = None,
-    db: AsyncSession = None
-) -> List[Dict[str, str]]:
-    """Build conversation context with personalization, emotion detection, and RAG"""
-    
-    messages = []
-    
-    # Get conversation history
-    conversation_history = []
-    
-    # Handle messages properly to avoid lazy loading issues
+    user_message: Message,
+    db: AsyncSession,
+    redis_client: Redis,
+    current_user: User,
+    emotion_data: Optional[Dict[str, Any]],
+    rag_context_data: Optional[Dict[str, Any]],
+    start_time: datetime,
+    max_tokens: int
+):
+    """Stream chat response from Gemini"""
     try:
-        if hasattr(chat, 'messages') and chat.messages is not None:
-            # Messages are already loaded via selectinload
-            sorted_messages = sorted(chat.messages, key=lambda x: x.created_at)
-            recent_messages = sorted_messages[-(settings.CONVERSATION_CONTEXT_WINDOW * 2):]
-        elif chat.id and db:
-            # Existing chat but messages not loaded - fetch them
-            result = await db.execute(
-                select(Message)
-                .where(Message.chat_id == chat.id)
-                .order_by(Message.created_at)
-                .limit(settings.CONVERSATION_CONTEXT_WINDOW * 2)
-            )
-            recent_messages = result.scalars().all()
-        else:
-            # New chat - no messages yet
-            recent_messages = []
-            
-        for msg in recent_messages:
-            role = "user" if msg.sender_type == SenderType.USER else "assistant"
-            conversation_history.append({
-                "role": role,
-                "content": msg.content
-            })
-    except Exception as e:
-        logger.warning(f"Failed to load conversation history: {str(e)}")
-        conversation_history = []
-    
-    # Check if user has short response preference
-    has_short_preference = (user_preferences and 
-                          user_preferences.get("preferred_response_length") == "short")
-    
-    # Generate personalized system prompt if preferences are available
-    if user_preferences:
-        # Use the personalization service to generate a truly personalized prompt
-        personalized_prompt = await personalization_service.generate_personalized_system_prompt(
-            user_preferences=user_preferences,
-            context={
-                "emotion": emotion_context.get("recent_emotion") if emotion_context else None,
-                "conversation_history": conversation_history,
-                "rag_context": rag_context is not None
+        # Generate streaming response from Gemini
+        ai_response_data = await gemini_service.generate_chat_response(
+            messages=messages,
+            temperature=chat.temperature,
+            max_tokens=max_tokens,
+            model=chat.ai_model,
+            stream=True,
+            user_id=str(current_user.id)
+        )
+        
+        if not ai_response_data.get("success"):
+            yield f"data: {json.dumps({'error': ai_response_data.get('error', 'Unknown error')})}\n\n"
+            return
+        
+        # Stream the response text
+        response_text = ai_response_data["response"]
+        chunks = response_text.split()  # Simple word-based chunking
+        
+        full_response = ""
+        for i, chunk in enumerate(chunks):
+            full_response += chunk + " "
+            yield f"data: {json.dumps({'content': chunk + ' '})}\n\n"
+            await asyncio.sleep(0.05)  # Small delay for smooth streaming
+        
+        # Save AI message after streaming completes
+        ai_message = Message(
+            chat_id=chat.id,
+            content=full_response.strip(),
+            message_type=MessageType.TEXT,
+            sender_type=SenderType.AI,
+            tokens_used=ai_response_data.get("tokens_used", {}).get("total_tokens", 0),
+            processing_time=ai_response_data.get("processing_time", 0),
+            message_metadata={
+                "model_used": ai_response_data.get("model_used", chat.ai_model),
+                "emotion_context": emotion_data is not None,
+                "personalization_applied": True,
+                "rag_context_used": rag_context_data is not None,
+                "streamed": True
             }
         )
+        db.add(ai_message)
         
-        # Log the personalized prompt for debugging
-        logger.info(f"Generated personalized system prompt: {personalized_prompt[:200]}...")
+        # Update chat statistics
+        chat.total_messages += 1
+        chat.total_tokens_used += ai_message.tokens_used
+        chat.last_message_at = datetime.now(timezone.utc)
+        chat.last_activity_at = datetime.now(timezone.utc)
         
-        # For short responses, use a simplified system prompt
-        if has_short_preference:
-            # Use ONLY the personalized prompt with strong brevity instructions
-            system_prompt = personalized_prompt
-        else:
-            # Get additional context-based adjustments from prompt service
-            context_prompt = prompt_service.get_prompt_for_context(
-                user_message="",  # Will be added later
-                conversation_history=conversation_history,
-                user_preferences=user_preferences,
-                detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
-            )
-            
-            # Combine both prompts for maximum personalization
-            system_prompt = f"{personalized_prompt}\n\n{context_prompt}"
-    else:
-        # Fall back to standard prompt service if no personalization data
-        system_prompt = prompt_service.get_prompt_for_context(
-            user_message="",
-            conversation_history=conversation_history,
-            user_preferences=user_preferences,
-            detected_emotion=emotion_context.get("recent_emotion") if emotion_context else None
-        )
-    
-    # Add STRONG brevity instruction at the END for short responses
-    if has_short_preference:
-        system_prompt += "\n\n[CRITICAL INSTRUCTION: You MUST keep your response to 2-3 sentences maximum. No lists, no multiple paragraphs, no detailed explanations. Be direct and concise. This is the most important instruction.]"
-    
-    # Add system prompt
-    messages.append({"role": "system", "content": system_prompt})
-    
-    # Add RAG context messages if available
-    if rag_context and rag_context.get("context_messages"):
-        # Add a context indicator to the system prompt
-        context_indicator = "\n\nRelevant context from previous conversations:"
-        messages[0]["content"] += context_indicator
+        await db.commit()
         
-        for ctx_msg in rag_context["context_messages"][-5:]:  # Limit context
-            role = "user" if ctx_msg.get("sender_type") == "USER" else "assistant"
-            messages.append({
-                "role": role,
-                "content": ctx_msg.get("content", "")
-            })
-    
-    # Add conversation history
-    messages.extend(conversation_history)
-    
-    return messages
+        # Send final metadata
+        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+        yield f"data: {json.dumps({'type': 'metadata','message_id': ai_message.id,'emotion': emotion_data,'tokens_used': ai_message.tokens_used,'processing_time': processing_time})}\n\n"
+        
+        yield "data: [DONE]\n\n"
+        
+    except Exception as e:
+        logger.error(f"Streaming failed: {str(e)}", exc_info=True)
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
-async def update_user_preferences(
+async def generate_and_update_chat_title(chat_id: int, messages: List[Dict[str, str]], db: AsyncSession):
+    """Generate and update chat title in background"""
+    try:
+        async with db.begin():
+            chat = await db.get(Chat, chat_id)
+            if chat and chat.title == "New Chat":
+                # Generate title using Gemini
+                title_result = await gemini_service.generate_conversation_title(messages)
+                if title_result.get("success"):
+                    chat.title = title_result["title"]
+                    await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to generate chat title: {str(e)}")
+
+
+async def update_user_statistics_and_preferences(
     user_id: int,
     message: str,
-    response: str,
     emotion: Optional[str],
     db: AsyncSession
-) -> None:
-    """Update user preferences based on interaction"""
-    
+):
+    """Update user statistics and learn from interaction"""
     try:
-        # Get or create user preference record
-        result = await db.execute(
-            select(UserPreference).where(UserPreference.user_id == user_id)
-        )
-        user_pref = result.scalar_one_or_none()
-        
-        if not user_pref:
-            user_pref = UserPreference(user_id=user_id)
-            db.add(user_pref)
-            await db.flush()
-        
-        # Ensure we have dictionaries to work with
-        if not user_pref.interaction_patterns:
-            user_pref.interaction_patterns = {}
-        if not user_pref.preferences:
-            user_pref.preferences = UserPreference.get_default_preferences()
-        
-        # Create a copy of patterns to modify
-        patterns = user_pref.interaction_patterns.copy()
-        
-        # Track message length preference
-        msg_length = len(message)
-        if msg_length < 50:
-            patterns["message_length"] = "short"
-        elif msg_length < 200:
-            patterns["message_length"] = "medium"
-        else:
-            patterns["message_length"] = "long"
-        
-        # Track time of day preference
-        hour = datetime.now().hour
-        if 6 <= hour < 12:
-            patterns["active_time"] = "morning"
-        elif 12 <= hour < 18:
-            patterns["active_time"] = "afternoon"
-        elif 18 <= hour < 24:
-            patterns["active_time"] = "evening"
-        else:
-            patterns["active_time"] = "night"
-        
-        # Track topic interests (simple keyword analysis)
-        topics = []
-        tech_keywords = ["code", "programming", "software", "tech", "computer", "ai", "app", "develop"]
-        if any(keyword in message.lower() for keyword in tech_keywords):
-            topics.append("technology")
-        
-        health_keywords = ["health", "wellness", "exercise", "mental", "feeling", "stress", "fitness", "diet"]
-        if any(keyword in message.lower() for keyword in health_keywords):
-            topics.append("health_wellness")
-        
-        business_keywords = ["work", "business", "job", "career", "project", "company", "meeting"]
-        if any(keyword in message.lower() for keyword in business_keywords):
-            topics.append("business")
-        
-        creative_keywords = ["art", "music", "creative", "design", "write", "story", "paint"]
-        if any(keyword in message.lower() for keyword in creative_keywords):
-            topics.append("creative")
-        
-        # Update preferences with topics
-        if topics:
-            preferences_copy = user_pref.preferences.copy()
-            current_interests = preferences_copy.get("interests", [])
-            preferences_copy["interests"] = list(set(current_interests + topics))[:10]  # Limit to 10 interests
-            user_pref.preferences = preferences_copy
-            flag_modified(user_pref, 'preferences')
-        
-        # Update emotional patterns
-        if emotion:
-            emotional_patterns = patterns.get("emotional_patterns", {})
-            emotional_patterns[datetime.now().date().isoformat()] = emotion
-            # Keep only last 30 days
-            cutoff_date = (datetime.now() - timedelta(days=30)).date().isoformat()
-            emotional_patterns = {k: v for k, v in emotional_patterns.items() if k >= cutoff_date}
-            patterns["emotional_patterns"] = emotional_patterns
-        
-        # Update interaction patterns
-        user_pref.interaction_patterns = patterns
-        flag_modified(user_pref, 'interaction_patterns')
-        
-        user_pref.last_interaction_at = datetime.now(timezone.utc)
-        
+        async with db.begin():
+            # Get user preference record
+            result = await db.execute(
+                select(UserPreference).where(UserPreference.user_id == user_id)
+            )
+            user_pref = result.scalar_one_or_none()
+            
+            if not user_pref:
+                # Create new preference record
+                user_pref = UserPreference(
+                    user_id=user_id,
+                    preferences={},
+                    interaction_patterns={}
+                )
+                db.add(user_pref)
+            
+            # Update interaction patterns
+            patterns = user_pref.interaction_patterns or {}
+            
+            # Track time of day preference
+            hour = datetime.now(timezone.utc).hour
+            time_slots = patterns.get("time_slots", {})
+            time_slots[str(hour)] = time_slots.get(str(hour), 0) + 1
+            patterns["time_slots"] = time_slots
+            
+            # Track topic interests based on keywords
+            topics = []
+            tech_keywords = ["code", "programming", "software", "computer", "technology", "AI", "machine learning"]
+            if any(keyword in message.lower() for keyword in tech_keywords):
+                topics.append("technology")
+            
+            health_keywords = ["health", "wellness", "exercise", "mental", "feeling", "stress", "fitness", "diet"]
+            if any(keyword in message.lower() for keyword in health_keywords):
+                topics.append("health_wellness")
+            
+            business_keywords = ["work", "business", "job", "career", "project", "company", "meeting"]
+            if any(keyword in message.lower() for keyword in business_keywords):
+                topics.append("business")
+            
+            creative_keywords = ["art", "music", "creative", "design", "write", "story", "paint"]
+            if any(keyword in message.lower() for keyword in creative_keywords):
+                topics.append("creative")
+            
+            # Update preferences with topics
+            if topics:
+                preferences_copy = user_pref.preferences.copy()
+                current_interests = preferences_copy.get("interests", [])
+                preferences_copy["interests"] = list(set(current_interests + topics))[:10]  # Limit to 10 interests
+                user_pref.preferences = preferences_copy
+                flag_modified(user_pref, 'preferences')
+            
+            # Update emotional patterns
+            if emotion:
+                emotional_patterns = patterns.get("emotional_patterns", {})
+                emotional_patterns[datetime.now().date().isoformat()] = emotion
+                # Keep only last 30 days
+                cutoff_date = (datetime.now() - timedelta(days=30)).date().isoformat()
+                emotional_patterns = {k: v for k, v in emotional_patterns.items() if k >= cutoff_date}
+                patterns["emotional_patterns"] = emotional_patterns
+            
+            # Update interaction patterns
+            user_pref.interaction_patterns = patterns
+            flag_modified(user_pref, 'interaction_patterns')
+            
+            user_pref.last_interaction_at = datetime.now(timezone.utc)
+            
+            await db.commit()
+            
     except Exception as e:
         logger.error(f"Failed to update user preferences: {str(e)}")
 
@@ -616,433 +734,392 @@ async def update_personalization_preferences(
         user_pref = result.scalar_one_or_none()
         
         if not user_pref:
-            # Create new preference record with DEFAULT preferences
             user_pref = UserPreference(
-                user_id=current_user.id
-                # Don't pass empty dicts - let __init__ set defaults
+                user_id=current_user.id,
+                preferences={},
+                interaction_patterns={}
             )
             db.add(user_pref)
-            await db.flush()  # Ensure object is persisted and has defaults
         
-        # Make sure preferences is not None
-        if user_pref.preferences is None:
-            user_pref.preferences = UserPreference.get_default_preferences()
+        # Update preferences
+        current_prefs = user_pref.preferences.copy() if user_pref.preferences else {}
         
-        # Update preferences with new values
-        update_data = preferences_update.dict(exclude_unset=True)
-        
-        # Map frontend field names to model field names
-        field_mapping = {
-            'emotional_support_level': 'emotional_support_level',
-            'response_length': 'preferred_response_length',
-            'conversation_style': 'conversation_style'
-        }
-        
-        # Log the update for debugging
-        logger.info(f"Updating preferences for user {current_user.id}: {update_data}")
-        
-        # Create a copy of current preferences to modify
-        updated_preferences = user_pref.preferences.copy()
-        
-        for frontend_key, value in update_data.items():
+        # Update each field if provided
+        update_dict = preferences_update.dict(exclude_unset=True)
+        for key, value in update_dict.items():
             if value is not None:
-                # Use mapped key if available, otherwise use original
-                model_key = field_mapping.get(frontend_key, frontend_key)
-                updated_preferences[model_key] = value
-                logger.info(f"Set preference {model_key} = {value}")
+                # Map the field names correctly
+                if key == "response_length":
+                    current_prefs["preferred_response_length"] = value
+                elif key == "conversation_style":
+                    current_prefs["conversation_style"] = value
+                elif key == "emotional_support_level":
+                    current_prefs["emotional_support_level"] = value
+                else:
+                    current_prefs[key] = value
         
-        # Reassign the entire preferences dict to trigger SQLAlchemy change detection
-        user_pref.preferences = updated_preferences
-        
-        # Alternative method: explicitly flag the field as modified
+        user_pref.preferences = current_prefs
         flag_modified(user_pref, 'preferences')
         
-        # Update timestamps
         user_pref.last_interaction_at = datetime.now(timezone.utc)
-        user_pref.updated_at = datetime.now(timezone.utc)
         
-        # Commit changes
         await db.commit()
         await db.refresh(user_pref)
         
-        # Clear cached preferences
-        if redis_client:
-            cache_key = f"user_preferences:{current_user.id}"
-            await redis_client.delete(cache_key)
-            logger.info(f"Cleared cache for user {current_user.id}")
+        # Clear any cached preferences
+        cache_key = f"user_preferences:{current_user.id}"
+        await redis_client.delete(cache_key)
         
-        logger.info(f"Successfully updated preferences for user {current_user.id}: {user_pref.preferences}")
+        # Transform to personalization format for response
+        transformed_prefs = transform_simple_preferences_to_personalization_format(current_prefs)
         
         return {
             "success": True,
-            "message": "Preferences updated successfully",
-            "preferences": user_pref.preferences,
-            "last_updated": user_pref.updated_at.isoformat() if user_pref.updated_at else None
+            "preferences": current_prefs,
+            "personalization_format": transformed_prefs,
+            "updated_at": user_pref.last_interaction_at.isoformat()
         }
         
     except Exception as e:
         logger.error(f"Failed to update preferences: {str(e)}", exc_info=True)
-        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update preferences"
         )
 
 
-# Get personalization info endpoint
-@router.get("/personalization")
-async def get_personalization_info(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    redis_client: Redis = Depends(get_redis)
-):
-    """Get user's personalization data"""
-    
-    try:
-        # Try to get cached preferences
-        preferences = await personalization_service.get_cached_preferences(
-            current_user.id,
-            redis_client
-        )
-        
-        # Get from database if not cached
-        if not preferences:
-            result = await db.execute(
-                select(UserPreference)
-                .where(UserPreference.user_id == current_user.id)
-            )
-            user_pref = result.scalar_one_or_none()
-            
-            if user_pref:
-                preferences = user_pref.preferences
-                # If preferences are empty, use defaults
-                if not preferences:
-                    preferences = UserPreference.get_default_preferences()
-            else:
-                # Return default preferences if no record exists
-                preferences = UserPreference.get_default_preferences()
-        
-        # Get interaction stats
-        message_count_result = await db.execute(
-            select(func.count(Message.id))
-            .join(Chat)
-            .where(Chat.user_id == current_user.id)
-        )
-        message_count = message_count_result.scalar() or 0
-        
-        return {
-            "user_id": current_user.id,
-            "preferences": preferences,
-            "interaction_count": message_count,
-            "personalization_enabled": message_count >= personalization_service.min_interactions,
-            "min_interactions_required": personalization_service.min_interactions,
-            "last_updated": datetime.now(timezone.utc).isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to get personalization info: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve personalization information"
-        )
-
-
-# Get conversation context endpoint
-@router.get("/conversation-context/{chat_id}", response_model=ConversationContext)
-async def get_conversation_context(
-    chat_id: int,
-    include_emotions: bool = Query(True, description="Include emotion history"),
-    include_preferences: bool = Query(True, description="Include user preferences"),
+# Get personalization preferences endpoint
+@router.get("/personalization", response_model=Dict[str, Any])
+async def get_personalization_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get conversation context for a chat"""
+    """Get user personalization preferences and insights"""
     
     try:
-        # Verify chat access
+        # Get user preference record
         result = await db.execute(
-            select(Chat)
-            .where(and_(
-                Chat.id == chat_id,
-                Chat.user_id == current_user.id
-            ))
+            select(UserPreference).where(UserPreference.user_id == current_user.id)
         )
-        chat = result.scalar_one_or_none()
+        user_pref = result.scalar_one_or_none()
         
-        if not chat:
+        if not user_pref:
+            # Return default preferences
+            return {
+                "preferences": {
+                    "conversation_style": "friendly",
+                    "preferred_response_length": "medium",
+                    "emotional_support_level": "standard",
+                    "technical_level": "intermediate",
+                    "formality_level": "neutral"
+                },
+                "insights": {
+                    "total_interactions": 0,
+                    "primary_interests": [],
+                    "active_times": [],
+                    "emotional_patterns": {}
+                },
+                "last_updated": None
+            }
+        
+        # Extract insights from interaction patterns
+        patterns = user_pref.interaction_patterns or {}
+        
+        # Get most active times
+        time_slots = patterns.get("time_slots", {})
+        sorted_times = sorted(time_slots.items(), key=lambda x: x[1], reverse=True)
+        active_times = [int(hour) for hour, _ in sorted_times[:3]]  # Top 3 active hours
+        
+        # Get emotional patterns
+        emotional_patterns = patterns.get("emotional_patterns", {})
+        
+        # Count total interactions
+        total_interactions = sum(time_slots.values())
+        
+        return {
+            "preferences": user_pref.preferences,
+            "insights": {
+                "total_interactions": total_interactions,
+                "primary_interests": user_pref.preferences.get("interests", []),
+                "active_times": active_times,
+                "emotional_patterns": emotional_patterns,
+                "most_common_emotion": max(emotional_patterns.values(), key=emotional_patterns.values().count) if emotional_patterns else None
+            },
+            "last_updated": user_pref.last_interaction_at.isoformat() if user_pref.last_interaction_at else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get preferences: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve preferences"
+        )
+
+
+# Emotion analysis endpoint
+@router.post("/analyze-emotion", response_model=Dict[str, Any])
+async def analyze_emotion(
+    text: str = Body(..., min_length=1, max_length=2000),
+    include_history: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Analyze emotion in text with optional history"""
+    
+    try:
+        # Analyze current text
+        emotion_data = await emotion_service.analyze_emotion(text)
+        
+        if not emotion_data:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Chat not found"
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Could not analyze emotion in the provided text"
             )
         
-        # Get recent messages
-        messages_result = await db.execute(
-            select(Message)
-            .where(Message.chat_id == chat_id)
-            .order_by(desc(Message.created_at))
-            .limit(20)
-        )
-        messages = messages_result.scalars().all()
+        response = {
+            "emotion": emotion_data,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
         
-        # Format messages
-        context = [
-            {
-                "role": "user" if msg.sender_type == SenderType.USER else "assistant",
-                "content": msg.content,
-                "timestamp": msg.created_at.isoformat(),
-                "emotion": msg.emotion_detected
-            }
-            for msg in reversed(messages)
-        ]
+        # Include emotion history if requested
+        if include_history:
+            # Get recent emotions for user
+            result = await db.execute(
+                select(Emotion)
+                .where(Emotion.user_id == current_user.id)
+                .order_by(desc(Emotion.detected_at))
+                .limit(10)
+            )
+            recent_emotions = result.scalars().all()
+            
+            history = [
+                {
+                    "emotion": e.primary_emotion.value,
+                    "confidence": e.confidence_score,
+                    "sentiment": e.sentiment_score,
+                    "detected_at": e.detected_at.isoformat()
+                }
+                for e in recent_emotions
+            ]
+            
+            response["history"] = history
         
-        return ConversationContext(
-            messages=context,
-            emotion_history=None,  # Would be populated from database
-            user_preferences=None  # Would be populated from personalization service
-        )
-    
+        return response
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get conversation context: {str(e)}", exc_info=True)
+        logger.error(f"Emotion analysis failed: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve conversation context"
+            detail="Failed to analyze emotion"
         )
 
 
-# Emotion analysis endpoints
-@router.post("/analyze-sentiment")
-async def analyze_text_sentiment(
-    text: str = Query(..., description="Text to analyze"),
-    current_user: User = Depends(get_current_user)
-):
-    """Analyze sentiment of arbitrary text"""
-    
-    try:
-        emotion_data = await emotion_service.analyze_emotion(text)
-        
-        return {
-            "text": text,
-            "sentiment": emotion_data,
-            "analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "user_id": current_user.id
-        }
-    except Exception as e:
-        logger.error(f"Sentiment analysis failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to analyze sentiment"
-        )
-
-
-@router.get("/emotion-patterns/{user_id}")
-async def get_emotion_patterns(
-    user_id: int,
-    time_window_hours: int = Query(24, ge=1, le=168, description="Time window in hours"),
+# Emotion history endpoint
+@router.get("/emotions/history", response_model=Dict[str, Any])
+async def get_emotion_history(
+    days: int = Query(7, ge=1, le=30),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get user's emotion patterns (admin only or own data)"""
-    
-    # Check permissions
-    if current_user.id != user_id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied"
-        )
+    """Get user's emotion history and trends"""
     
     try:
-        since_time = datetime.now(timezone.utc) - timedelta(hours=time_window_hours)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
-        # Query emotions
+        # Get emotions within date range
         result = await db.execute(
             select(Emotion)
-            .where(and_(
-                Emotion.user_id == user_id,
-                Emotion.detected_at >= since_time
-            ))
-            .order_by(desc(Emotion.detected_at))
+            .where(
+                and_(
+                    Emotion.user_id == current_user.id,
+                    Emotion.detected_at >= cutoff_date
+                )
+            )
+            .order_by(Emotion.detected_at)
         )
         emotions = result.scalars().all()
         
-        # Analyze patterns
+        if not emotions:
+            return {
+                "emotions": [],
+                "summary": {
+                    "total_emotions": 0,
+                    "dominant_emotion": None,
+                    "average_sentiment": 0.0,
+                    "emotion_distribution": {}
+                },
+                "trend": "stable"
+            }
+        
+        # Calculate statistics
         emotion_counts = {}
-        sentiment_scores = []
+        sentiment_sum = 0
         
         for emotion in emotions:
             emotion_type = emotion.primary_emotion.value
             emotion_counts[emotion_type] = emotion_counts.get(emotion_type, 0) + 1
-            sentiment_scores.append(emotion.sentiment_score)
+            sentiment_sum += emotion.sentiment_score
         
-        avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+        dominant_emotion = max(emotion_counts, key=emotion_counts.get) if emotion_counts else None
+        average_sentiment = sentiment_sum / len(emotions)
+        
+        # Calculate trend
+        if len(emotions) >= 2:
+            recent_emotions = emotions[-len(emotions)//3:]  # Last third
+            older_emotions = emotions[:len(emotions)//3]   # First third
+            
+            recent_sentiment = sum(e.sentiment_score for e in recent_emotions) / len(recent_emotions)
+            older_sentiment = sum(e.sentiment_score for e in older_emotions) / len(older_emotions)
+            
+            if recent_sentiment > older_sentiment + 0.1:
+                trend = "improving"
+            elif recent_sentiment < older_sentiment - 0.1:
+                trend = "declining"
+            else:
+                trend = "stable"
+        else:
+            trend = "insufficient_data"
         
         return {
-            "user_id": user_id,
-            "time_window_hours": time_window_hours,
-            "total_emotions": len(emotions),
-            "emotion_distribution": emotion_counts,
-            "average_sentiment": avg_sentiment,
-            "dominant_emotion": max(emotion_counts, key=emotion_counts.get) if emotion_counts else None,
-            "timeline": [
+            "emotions": [
                 {
-                    "timestamp": e.detected_at.isoformat(),
                     "emotion": e.primary_emotion.value,
+                    "confidence": e.confidence_score,
                     "sentiment": e.sentiment_score,
-                    "confidence": e.confidence_score
+                    "detected_at": e.detected_at.isoformat(),
+                    "chat_id": e.chat_id
                 }
-                for e in emotions[:50]  # Limit to recent 50
-            ]
+                for e in emotions
+            ],
+            "summary": {
+                "total_emotions": len(emotions),
+                "dominant_emotion": dominant_emotion,
+                "average_sentiment": average_sentiment,
+                "emotion_distribution": emotion_counts
+            },
+            "trend": trend,
+            "period": {
+                "start": cutoff_date.isoformat(),
+                "end": datetime.now(timezone.utc).isoformat(),
+                "days": days
+            }
         }
         
     except Exception as e:
-        logger.error(f"Failed to get emotion patterns: {str(e)}", exc_info=True)
+        logger.error(f"Failed to get emotion history: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve emotion patterns"
+            detail="Failed to retrieve emotion history"
         )
 
 
-# User emotions endpoint
-@router.get("/user/emotions")
-async def get_user_emotions(
-    days: int = Query(7, ge=1, le=90),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get user's emotional history"""
-    
-    since_date = datetime.now(timezone.utc) - timedelta(days=days)
-    
-    result = await db.execute(
-        select(Emotion)
-        .where(
-            and_(
-                Emotion.user_id == current_user.id,
-                Emotion.detected_at >= since_date
-            )
-        )
-        .order_by(desc(Emotion.detected_at))
-        .limit(100)
-    )
-    
-    emotions = result.scalars().all()
-    
-    # Aggregate emotion data
-    emotion_summary = {}
-    for emotion in emotions:
-        emotion_type = emotion.primary_emotion.value
-        emotion_summary[emotion_type] = emotion_summary.get(emotion_type, 0) + 1
-    
-    return {
-        "user_id": current_user.id,
-        "period_days": days,
-        "total_interactions": len(emotions),
-        "emotion_distribution": emotion_summary,
-        "recent_emotions": [
-            {
-                "timestamp": e.detected_at.isoformat(),
-                "emotion": e.primary_emotion.value,
-                "confidence": e.confidence_score,
-                "sentiment": e.sentiment_score
-            }
-            for e in emotions[:10]
-        ]
-    }
-
-
-# RAG context visualization endpoint
-@router.get("/rag-context/{message_id}")
-async def get_rag_context_for_message(
+# RAG visualization endpoint
+@router.get("/rag/visualization/{message_id}", response_model=Dict[str, Any])
+async def get_rag_visualization(
     message_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get RAG context used for a specific message"""
+    """Get RAG visualization data for a specific message"""
     
-    # Get the message
-    result = await db.execute(
-        select(Message).where(
-            and_(
-                Message.id == message_id,
-                Message.chat_id.in_(
-                    select(Chat.id).where(Chat.user_id == current_user.id)
+    try:
+        # Get message and verify ownership
+        result = await db.execute(
+            select(Message)
+            .join(Chat)
+            .where(
+                and_(
+                    Message.id == message_id,
+                    Chat.user_id == current_user.id
                 )
             )
         )
-    )
-    message = result.scalar_one_or_none()
-    
-    if not message:
-        raise HTTPException(status_code=404, detail="Message not found")
-    
-    # Get RAG context from message metadata
-    rag_metadata = message.message_metadata.get("rag_context", {})
-    
-    # Get user preferences
-    pref_result = await db.execute(
-        select(UserPreference).where(UserPreference.user_id == current_user.id)
-    )
-    user_pref = pref_result.scalar_one_or_none()
-    
-    # Get recent emotions
-    emotion_result = await db.execute(
-        select(Emotion)
-        .where(Emotion.user_id == current_user.id)
-        .order_by(desc(Emotion.detected_at))
-        .limit(5)
-    )
-    recent_emotions = emotion_result.scalars().all()
-    
-    # Build emotional pattern
-    emotional_history = []
-    for i in range(7):
-        date = datetime.now() - timedelta(days=i)
-        day_emotions = [e for e in recent_emotions 
-                       if e.detected_at.date() == date.date()]
+        message = result.scalar_one_or_none()
         
-        if day_emotions:
-            avg_sentiment = sum(e.sentiment_score for e in day_emotions) / len(day_emotions)
-        else:
-            avg_sentiment = 0.5
+        if not message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Message not found"
+            )
+        
+        # Extract RAG metadata
+        rag_metadata = message.message_metadata.get("rag_context", {})
+        
+        # Get user preferences for visualization
+        result = await db.execute(
+            select(UserPreference).where(UserPreference.user_id == current_user.id)
+        )
+        user_pref = result.scalar_one_or_none()
+        
+        # Get recent emotions for pattern
+        result = await db.execute(
+            select(Emotion)
+            .where(Emotion.user_id == current_user.id)
+            .order_by(desc(Emotion.detected_at))
+            .limit(7)
+        )
+        recent_emotions = result.scalars().all()
+        
+        # Build emotional history
+        emotional_history = []
+        for i in range(7):
+            date = datetime.now() - timedelta(days=i)
+            day_emotions = [e for e in recent_emotions 
+                           if e.detected_at.date() == date.date()]
             
-        emotional_history.append({
-            "date": date.strftime("%a"),
-            "score": (avg_sentiment + 1) / 2  # Normalize to 0-1
-        })
-    
-    emotional_history.reverse()
-    
-    # Determine trend
-    if len(emotional_history) >= 2:
-        recent_avg = sum(d["score"] for d in emotional_history[-3:]) / 3
-        older_avg = sum(d["score"] for d in emotional_history[:3]) / 3
-        trend = "improving" if recent_avg > older_avg else "declining" if recent_avg < older_avg else "stable"
-    else:
-        trend = "stable"
-    
-    return {
-        "message_id": message_id,
-        "currentMessage": message.content,
-        "contextMessages": rag_metadata.get("context_messages", []),
-        "userPreferences": {
-            "conversationStyle": user_pref.preferences.get("conversation_style", "friendly") if user_pref else "friendly",
-            "responseLength": user_pref.preferences.get("preferred_response_length", "medium") if user_pref else "medium",
-            "interests": user_pref.preferences.get("interests", []) if user_pref else [],
-            "preferredTime": user_pref.interaction_patterns.get("active_time", "day") if user_pref and user_pref.interaction_patterns else "day"
-        },
-        "emotionalPattern": {
-            "recent": recent_emotions[0].primary_emotion.value if recent_emotions else "neutral",
-            "trend": trend,
-            "history": emotional_history
-        },
-        "ragStats": {
-            "contextWindowSize": 10,
-            "embeddingDimensions": 1536,
-            "similarityThreshold": 0.7,
-            "contextsRetrieved": len(rag_metadata.get("context_messages", []))
+            if day_emotions:
+                avg_sentiment = sum(e.sentiment_score for e in day_emotions) / len(day_emotions)
+            else:
+                avg_sentiment = 0.5
+                
+            emotional_history.append({
+                "date": date.strftime("%a"),
+                "score": (avg_sentiment + 1) / 2  # Normalize to 0-1
+            })
+        
+        emotional_history.reverse()
+        
+        # Determine trend
+        if len(emotional_history) >= 2:
+            recent_avg = sum(d["score"] for d in emotional_history[-3:]) / 3
+            older_avg = sum(d["score"] for d in emotional_history[:3]) / 3
+            trend = "improving" if recent_avg > older_avg else "declining" if recent_avg < older_avg else "stable"
+        else:
+            trend = "stable"
+        
+        return {
+            "message_id": message_id,
+            "currentMessage": message.content,
+            "contextMessages": rag_metadata.get("context_messages", []),
+            "userPreferences": {
+                "conversationStyle": user_pref.preferences.get("conversation_style", "friendly") if user_pref else "friendly",
+                "responseLength": user_pref.preferences.get("preferred_response_length", "medium") if user_pref else "medium",
+                "interests": user_pref.preferences.get("interests", []) if user_pref else [],
+                "preferredTime": user_pref.interaction_patterns.get("active_time", "day") if user_pref and user_pref.interaction_patterns else "day"
+            },
+            "emotionalPattern": {
+                "recent": recent_emotions[0].primary_emotion.value if recent_emotions else "neutral",
+                "trend": trend,
+                "history": emotional_history
+            },
+            "ragStats": {
+                "contextWindowSize": 10,
+                "embeddingDimensions": 768,  # Gemini embeddings
+                "similarityThreshold": 0.7,
+                "contextsRetrieved": len(rag_metadata.get("context_messages", []))
+            }
         }
-    }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get RAG visualization: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve RAG visualization data"
+        )
 
 
 # Template-based chat endpoint
@@ -1105,8 +1182,8 @@ async def ai_service_health():
     """Health check for AI service components"""
     
     try:
-        # Test OpenAI service
-        openai_healthy = await openai_service.health_check()
+        # Test Gemini service
+        gemini_healthy = await gemini_service.health_check()
         
         # Test emotion service
         emotion_healthy = await emotion_service.health_check()
@@ -1115,16 +1192,19 @@ async def ai_service_health():
         personalization_healthy = await personalization_service.health_check()
         
         overall_status = "healthy" if all([
-            openai_healthy, emotion_healthy, personalization_healthy
+            gemini_healthy, emotion_healthy, personalization_healthy
         ]) else "degraded"
+        
+        model_info = await gemini_service.get_model_info()
         
         return {
             "status": overall_status,
             "services": {
-                "openai": "healthy" if openai_healthy else "unhealthy",
+                "gemini": "healthy" if gemini_healthy else "unhealthy",
                 "emotion_analysis": "healthy" if emotion_healthy else "unhealthy",
                 "personalization": "healthy" if personalization_healthy else "unhealthy"
             },
+            "model_info": model_info,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         

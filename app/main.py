@@ -20,7 +20,8 @@ from typing import Dict, Any
 
 from app.config import settings
 from app.database import create_tables, check_db_health, check_redis_health, cleanup_database
-from app.routers import auth, users, chat, ai, websocket, health
+from app.routers import auth, users, chat, ai, websocket, health, voice
+
 
 from app.middleware import (
     RateLimitMiddleware,
@@ -92,10 +93,10 @@ async def lifespan(app: FastAPI):
         
         # 3. Initialize services
         startup_tasks.append("Service initialization")
-        from app.services import openai_service, emotion_service, personalization_service
+        from app.services import gemini_service, emotion_service, personalization_service
         
         # Test OpenAI connection
-        if await openai_service.health_check():
+        if await gemini_service.health_check():
             logger.info("✅ OpenAI service initialized")
         else:
             logger.warning("⚠️ OpenAI service connection issues")
@@ -129,7 +130,7 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Database connections closed")
         
         # Close service connections
-        await openai_service.cleanup()
+        await gemini_service.cleanup()
         logger.info("✅ Service connections closed")
         
         logger.info("👋 Application shutdown complete!")
@@ -150,11 +151,11 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],  # Configure properly for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Total-Count", "X-Page", "X-Per-Page"],
+    expose_headers=["*"]
 )
 
 # Add security headers
@@ -186,6 +187,7 @@ app.include_router(chat, prefix="/api/v1/chat", tags=["Chat"])
 app.include_router(ai, prefix="/api/v1/ai", tags=["AI"])
 app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
 app.include_router(health, prefix="/api/v1", tags=["Health"])  # Changed to include /api/v1
+app.include_router(voice.router)
 
 # Root endpoint
 @app.get("/", include_in_schema=False)

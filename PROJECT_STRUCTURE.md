@@ -22,7 +22,7 @@ ai-chatbot-backend/
 │   │   └── websocket.py   # WebSocket handlers
 │   ├── services/          # Business logic services
 │   │   ├── __init__.py
-│   │   ├── openai_service.py     # OpenAI integration
+│   │   ├── gemini_service.py     # Gemini integration
 │   │   ├── emotion_service.py    # Emotion detection
 │   │   └── personalization.py   # User personalization
 │   └── utils/             # Utility functions
@@ -59,7 +59,7 @@ ai-chatbot-backend/
 - **routers/websocket.py**: Real-time WebSocket communication
 
 ### Services
-- **services/openai_service.py**: OpenAI API integration
+- **services/gemini_service.py**: Gemini API integration
 - **services/emotion_service.py**: Emotion detection and analysis
 - **services/personalization.py**: User behavior learning and adaptation
 

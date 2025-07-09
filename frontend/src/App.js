@@ -118,6 +118,58 @@ const App = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Add state for voice recording
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingMode, setRecordingMode] = useState('push'); // 'push' or 'continuous'
+
+  // Add voice message handler
+  const sendVoiceMessage = async (audioBlob) => {
+    try {
+      const formData = new FormData();
+      formData.append('chat_id', activeChat.id);
+      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('language', 'en-US');
+      
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`${API_BASE_URL}/voice/voice-message`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Add messages to chat
+        setMessages(prev => [...prev, 
+          {
+            id: data.user_message.id,
+            content: data.user_message.content,
+            role: 'user',
+            timestamp: new Date().toISOString(),
+            metadata: { type: 'voice', confidence: data.user_message.confidence }
+          },
+          {
+            id: data.ai_message.id,
+            content: data.ai_message.content,
+            role: 'assistant',
+            timestamp: new Date().toISOString()
+          }
+        ]);
+        
+        // Play audio response
+        if (data.audio_response) {
+          const audio = new Audio(`data:audio/mp3;base64,${data.audio_response}`);
+          audio.play();
+        }
+      }
+    } catch (error) {
+      console.error('Voice message error:', error);
+    }
+  };
+
   useEffect(() => {
     const token = localStorage.getItem('access_token');
     if (token) {
@@ -159,6 +211,35 @@ const App = () => {
             </div>
           </div>
         </div>
+        
+        {/* <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <ReactMediaRecorder
+            audio
+            onStop={(blobUrl, blob) => sendVoiceMessage(blob)}
+            render={({ status, startRecording, stopRecording }) => (
+              <button
+                onMouseDown={() => recordingMode === 'push' && startRecording()}
+                onMouseUp={() => recordingMode === 'push' && stopRecording()}
+                onClick={() => {
+                  if (recordingMode === 'continuous') {
+                    status === 'recording' ? stopRecording() : startRecording();
+                  }
+                }}
+                style={{
+                  padding: '12px',
+                  borderRadius: '50%',
+                  backgroundColor: status === 'recording' ? '#ef4444' : '#4f46e5',
+                  color: 'white',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                {status === 'recording' ? '🎤 Recording' : '🎤 Hold to Talk'}
+              </button>
+            )}
+          />
+        </div> */}
+
       </div>
     );
   }

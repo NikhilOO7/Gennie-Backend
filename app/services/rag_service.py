@@ -1,133 +1,181 @@
 """
 RAG (Retrieval-Augmented Generation) Service
-Provides context retrieval and conversation memory for the chatbot
+Provides context-aware responses by retrieving relevant past conversations
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, and_
-import json
-import numpy as np
+from sqlalchemy import select, and_, or_, desc, func
+from sqlalchemy.orm import selectinload
 from redis.asyncio import Redis
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 import hashlib
+import json
 
-from app.models.message import Message, SenderType
+from app.models.message import Message, MessageType, SenderType
+from app.models.chat import Chat
 from app.models.user_preference import UserPreference
-from app.services.openai_service import openai_service
+from app.services.gemini_service import gemini_service
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    """Service for managing conversation context and retrieval"""
+    """
+    RAG service for context-aware conversation retrieval and generation
+    """
     
     def __init__(self):
+        """Initialize RAG service"""
+        self.embeddings_model = "textembedding-gecko"  # Gemini embeddings model
+        self.embeddings_dimension = 768  # Gemini embeddings dimension
+        self.max_context_messages = 20
+        self.relevance_threshold = 0.7
+        self.time_decay_factor = 0.95
         self.embedding_cache_ttl = 3600  # 1 hour
-        self.context_window_size = 10
-        self.similarity_threshold = 0.7
-        self.embeddings_model = "text-embedding-ada-002"
+        
+        logger.info("RAG service initialized")
     
-    async def get_context_for_chat(
+    async def get_context_for_query(
         self,
-        chat_id: int,
+        query: str,
         user_id: int,
-        current_message: str,
-        db: AsyncSession,
-        redis_client: Optional[Redis] = None
+        chat_id: Optional[int] = None,
+        db: Optional[AsyncSession] = None,
+        redis_client: Optional[Redis] = None,
+        limit: int = 10
     ) -> Dict[str, Any]:
         """
-        Retrieve relevant context for the current chat message
+        Get relevant context for a query from past conversations
         
+        Args:
+            query: The user's query
+            user_id: User ID
+            chat_id: Optional specific chat ID
+            db: Database session
+            redis_client: Redis client for caching
+            limit: Maximum number of context messages
+            
         Returns:
-            Dictionary containing:
-            - context_messages: List of relevant previous messages
-            - user_preferences: User's preferences and patterns
-            - similarity_scores: Relevance scores for context messages
+            Dictionary with context messages and metadata
         """
         try:
-            # Get recent messages from the chat
-            recent_messages = await self._get_recent_messages(
-                chat_id=chat_id,
-                db=db,
-                limit=20
+            start_time = datetime.now(timezone.utc)
+            
+            # Get query embedding
+            query_embedding = await self._get_message_embedding(query, redis_client)
+            if query_embedding is None:
+                logger.warning("Failed to get query embedding")
+                return {"context_messages": [], "user_preferences": {}}
+            
+            # Retrieve relevant messages
+            relevant_messages = await self._retrieve_relevant_messages(
+                query_embedding,
+                user_id,
+                chat_id,
+                db,
+                limit
             )
             
             # Get user preferences
-            user_preferences = await self._get_user_preferences(
-                user_id=user_id,
-                db=db
-            )
+            user_preferences = await self._get_user_preferences(user_id, db)
             
-            # Generate embedding for current message
-            current_embedding = await self._get_message_embedding(
-                message=current_message,
-                redis_client=redis_client
-            )
+            # Format context
+            context_messages = []
+            for msg, score in relevant_messages:
+                context_messages.append({
+                    "content": msg.content,
+                    "sender_type": msg.sender_type.value,
+                    "created_at": msg.created_at.isoformat(),
+                    "relevance_score": float(score),
+                    "chat_id": msg.chat_id,
+                    "tokens": msg.tokens_used or 0
+                })
             
-            # Find similar messages if we have embeddings
-            similar_messages = []
-            if current_embedding is not None:
-                similar_messages = await self._find_similar_messages(
-                    current_embedding=current_embedding,
-                    recent_messages=recent_messages,
-                    redis_client=redis_client
-                )
-            
-            # Combine recent and similar messages
-            context_messages = self._merge_context_messages(
-                recent_messages=recent_messages[:self.context_window_size],
-                similar_messages=similar_messages
-            )
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             return {
                 "context_messages": context_messages,
                 "user_preferences": user_preferences,
-                "has_embeddings": current_embedding is not None
+                "query_embedding_cached": False,  # Would track if cached
+                "processing_time": processing_time,
+                "messages_retrieved": len(context_messages)
             }
             
         except Exception as e:
-            logger.error(f"Failed to get context for chat: {str(e)}")
-            return {
-                "context_messages": [],
-                "user_preferences": {},
-                "error": str(e)
-            }
+            logger.error(f"Failed to get context for query: {str(e)}", exc_info=True)
+            return {"context_messages": [], "user_preferences": {}}
     
-    async def _get_recent_messages(
+    async def _retrieve_relevant_messages(
         self,
-        chat_id: int,
+        query_embedding: np.ndarray,
+        user_id: int,
+        chat_id: Optional[int],
         db: AsyncSession,
-        limit: int = 20
-    ) -> List[Dict[str, Any]]:
-        """Get recent messages from the chat"""
+        limit: int
+    ) -> List[Tuple[Message, float]]:
+        """Retrieve relevant messages based on embedding similarity"""
         try:
-            query = select(Message).where(
-                Message.chat_id == chat_id
-            ).order_by(
-                desc(Message.created_at)
-            ).limit(limit)
+            # Build query
+            query = select(Message).join(Chat).where(
+                and_(
+                    Chat.user_id == user_id,
+                    Message.content.isnot(None),
+                    Message.content != ""
+                )
+            )
             
+            # Filter by chat if specified
+            if chat_id:
+                query = query.where(Chat.id == chat_id)
+            
+            # Order by recency and limit
+            query = query.order_by(desc(Message.created_at)).limit(100)
+            
+            # Execute query
             result = await db.execute(query)
             messages = result.scalars().all()
             
-            # Convert to dictionaries and reverse to chronological order
-            message_dicts = []
-            for msg in reversed(messages):
-                message_dicts.append({
-                    "id": msg.id,
-                    "content": msg.content,
-                    "sender_type": msg.sender_type.value,
-                    "created_at": msg.created_at.isoformat(),
-                    "emotion_detected": msg.emotion_detected,
-                    "sentiment_score": msg.sentiment_score
-                })
+            if not messages:
+                return []
             
-            return message_dicts
+            # Calculate similarities
+            relevant_messages = []
+            for msg in messages:
+                # Get message embedding
+                msg_embedding = await self._get_message_embedding(
+                    msg.content,
+                    None  # Redis client could be passed here
+                )
+                
+                if msg_embedding is None:
+                    continue
+                
+                # Calculate cosine similarity
+                similarity = cosine_similarity(
+                    query_embedding.reshape(1, -1),
+                    msg_embedding.reshape(1, -1)
+                )[0][0]
+                
+                # Apply time decay
+                time_diff = (datetime.now(timezone.utc) - msg.created_at).days
+                time_weight = self.time_decay_factor ** time_diff
+                weighted_score = similarity * time_weight
+                
+                # Filter by threshold
+                if weighted_score >= self.relevance_threshold:
+                    relevant_messages.append((msg, weighted_score))
+            
+            # Sort by score and limit
+            relevant_messages.sort(key=lambda x: x[1], reverse=True)
+            return relevant_messages[:limit]
             
         except Exception as e:
-            logger.error(f"Failed to get recent messages: {str(e)}")
+            logger.error(f"Failed to retrieve relevant messages: {str(e)}")
             return []
     
     async def _get_user_preferences(
@@ -135,9 +183,8 @@ class RAGService:
         user_id: int,
         db: AsyncSession
     ) -> Dict[str, Any]:
-        """Get user preferences and patterns"""
+        """Get user preferences for personalization"""
         try:
-            # Get user preference record
             result = await db.execute(
                 select(UserPreference).where(UserPreference.user_id == user_id)
             )
@@ -175,8 +222,8 @@ class RAGService:
                 if cached:
                     return np.frombuffer(cached, dtype=np.float32)
             
-            # Generate new embedding using the OpenAI service
-            embedding_result = await openai_service.generate_embeddings(
+            # Generate new embedding using the Gemini service
+            embedding_result = await gemini_service.generate_embeddings(
                 texts=message,
                 model=self.embeddings_model
             )
@@ -207,207 +254,221 @@ class RAGService:
             logger.error(f"Failed to get message embedding: {str(e)}")
             return None
     
-    async def _find_similar_messages(
+    async def find_similar_conversations(
         self,
-        current_embedding: np.ndarray,
-        recent_messages: List[Dict[str, Any]],
-        redis_client: Optional[Redis] = None
+        query: str,
+        user_id: int,
+        db: AsyncSession,
+        redis_client: Optional[Redis] = None,
+        limit: int = 5
     ) -> List[Dict[str, Any]]:
-        """Find messages similar to the current one based on embeddings"""
+        """
+        Find similar past conversations
+        
+        Args:
+            query: Search query
+            user_id: User ID
+            db: Database session
+            redis_client: Redis client
+            limit: Maximum number of conversations
+            
+        Returns:
+            List of similar conversations with metadata
+        """
         try:
-            similar_messages = []
+            # Get query embedding
+            query_embedding = await self._get_message_embedding(query, redis_client)
+            if query_embedding is None:
+                return []
             
-            for message in recent_messages:
-                # Get embedding for the message
-                msg_embedding = await self._get_message_embedding(
-                    message["content"],
-                    redis_client
-                )
+            # Get user's chats
+            result = await db.execute(
+                select(Chat)
+                .where(and_(
+                    Chat.user_id == user_id,
+                    Chat.is_active == True
+                ))
+                .options(selectinload(Chat.messages))
+                .order_by(desc(Chat.updated_at))
+                .limit(50)
+            )
+            chats = result.scalars().all()
+            
+            # Calculate chat similarities
+            similar_chats = []
+            for chat in chats:
+                if not chat.messages:
+                    continue
                 
-                if msg_embedding is not None:
-                    # Calculate similarity
-                    similarity = self._calculate_cosine_similarity(
-                        current_embedding,
-                        msg_embedding
-                    )
-                    
-                    if similarity >= self.similarity_threshold:
-                        message_copy = message.copy()
-                        message_copy["relevance_score"] = float(similarity)
-                        similar_messages.append(message_copy)
+                # Calculate average embedding for chat
+                chat_embeddings = []
+                for msg in chat.messages[-10:]:  # Last 10 messages
+                    if msg.content:
+                        embedding = await self._get_message_embedding(msg.content, redis_client)
+                        if embedding is not None:
+                            chat_embeddings.append(embedding)
+                
+                if not chat_embeddings:
+                    continue
+                
+                # Average embedding
+                avg_embedding = np.mean(chat_embeddings, axis=0)
+                
+                # Calculate similarity
+                similarity = cosine_similarity(
+                    query_embedding.reshape(1, -1),
+                    avg_embedding.reshape(1, -1)
+                )[0][0]
+                
+                similar_chats.append({
+                    "chat_id": chat.id,
+                    "title": chat.title,
+                    "similarity_score": float(similarity),
+                    "message_count": len(chat.messages),
+                    "last_message_at": chat.last_message_at.isoformat() if chat.last_message_at else None,
+                    "created_at": chat.created_at.isoformat()
+                })
             
-            # Sort by relevance score
-            similar_messages.sort(key=lambda x: x["relevance_score"], reverse=True)
-            
-            return similar_messages[:5]  # Return top 5 similar messages
+            # Sort by similarity and limit
+            similar_chats.sort(key=lambda x: x["similarity_score"], reverse=True)
+            return similar_chats[:limit]
             
         except Exception as e:
-            logger.error(f"Failed to find similar messages: {str(e)}")
+            logger.error(f"Failed to find similar conversations: {str(e)}")
             return []
     
-    def _calculate_cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors"""
-        try:
-            dot_product = np.dot(vec1, vec2)
-            norm1 = np.linalg.norm(vec1)
-            norm2 = np.linalg.norm(vec2)
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate cosine similarity: {str(e)}")
-            return 0.0
-    
-    def _merge_context_messages(
+    async def generate_contextual_response(
         self,
-        recent_messages: List[Dict[str, Any]],
-        similar_messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Merge recent and similar messages, removing duplicates"""
-        # Use a set to track message IDs
-        seen_ids = set()
-        merged = []
-        
-        # Add similar messages first (they're more relevant)
-        for msg in similar_messages:
-            if msg["id"] not in seen_ids:
-                seen_ids.add(msg["id"])
-                merged.append(msg)
-        
-        # Add recent messages
-        for msg in recent_messages:
-            if msg["id"] not in seen_ids:
-                seen_ids.add(msg["id"])
-                merged.append(msg)
-        
-        # Sort by created_at to maintain chronological order
-        merged.sort(key=lambda x: x["created_at"])
-        
-        return merged[:self.context_window_size]
-    
-    async def store_conversation_feedback(
-        self,
-        message_id: int,
-        user_id: int,
-        feedback: str,
-        db: AsyncSession
-    ) -> bool:
-        """Store user feedback for improving context retrieval"""
-        try:
-            # Get the message
-            result = await db.execute(
-                select(Message).where(Message.id == message_id)
-            )
-            message = result.scalar_one_or_none()
-            
-            if not message:
-                logger.error(f"Message {message_id} not found")
-                return False
-            
-            # Update message metadata with feedback
-            metadata = message.message_metadata or {}
-            feedback_list = metadata.get("user_feedback", [])
-            feedback_list.append({
-                "user_id": user_id,
-                "feedback": feedback,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-            metadata["user_feedback"] = feedback_list
-            message.message_metadata = metadata
-            
-            await db.commit()
-            
-            logger.info(f"Feedback stored for message {message_id}: {feedback}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to store feedback: {str(e)}")
-            await db.rollback()
-            return False
-    
-    async def get_conversation_summary(
-        self,
-        chat_id: int,
-        db: AsyncSession,
-        max_messages: int = 50
+        query: str,
+        context_messages: List[Dict[str, Any]],
+        user_preferences: Dict[str, Any],
+        system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Generate a summary of the conversation"""
+        """
+        Generate response with context using Gemini
+        
+        Args:
+            query: User's query
+            context_messages: Retrieved context messages
+            user_preferences: User preferences
+            system_prompt: Optional system prompt
+            
+        Returns:
+            Generated response with metadata
+        """
+        try:
+            # Build messages
+            messages = []
+            
+            # Add system prompt
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            else:
+                # Default RAG-aware system prompt
+                messages.append({
+                    "role": "system",
+                    "content": "You are a helpful AI assistant with access to conversation history. "
+                              "Use the provided context to give more personalized and relevant responses."
+                })
+            
+            # Add user preferences as context
+            if user_preferences:
+                pref_prompt = f"User preferences: {json.dumps(user_preferences, indent=2)}"
+                messages.append({"role": "system", "content": pref_prompt})
+            
+            # Add context messages
+            if context_messages:
+                context_prompt = "Relevant conversation history:\n"
+                for ctx in context_messages[:5]:  # Limit to 5 most relevant
+                    sender = "User" if ctx["sender_type"] == "USER" else "Assistant"
+                    context_prompt += f"{sender}: {ctx['content'][:200]}...\n"
+                messages.append({"role": "system", "content": context_prompt})
+            
+            # Add user query
+            messages.append({"role": "user", "content": query})
+            
+            # Generate response using Gemini
+            response = await gemini_service.generate_chat_response(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to generate contextual response: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
+    async def update_embeddings_batch(
+        self,
+        message_ids: List[int],
+        db: AsyncSession,
+        redis_client: Optional[Redis] = None
+    ) -> Dict[str, Any]:
+        """
+        Update embeddings for a batch of messages
+        
+        Args:
+            message_ids: List of message IDs
+            db: Database session
+            redis_client: Redis client
+            
+        Returns:
+            Update statistics
+        """
         try:
             # Get messages
-            messages = await self._get_recent_messages(
-                chat_id=chat_id,
-                db=db,
-                limit=max_messages
+            result = await db.execute(
+                select(Message).where(Message.id.in_(message_ids))
             )
+            messages = result.scalars().all()
             
-            if not messages:
-                return {
-                    "summary": "No conversation history",
-                    "message_count": 0
-                }
-            
-            # Extract key information
-            topics = set()
-            emotions = []
-            sentiment_sum = 0
-            sentiment_count = 0
+            success_count = 0
+            error_count = 0
             
             for msg in messages:
-                # Simple topic extraction (could be enhanced with NLP)
-                words = msg["content"].lower().split()
-                for word in words:
-                    if len(word) > 5:  # Simple heuristic
-                        topics.add(word)
+                if not msg.content:
+                    continue
                 
-                # Emotion tracking
-                if msg["emotion_detected"]:
-                    emotions.append(msg["emotion_detected"])
-                
-                # Sentiment tracking
-                if msg["sentiment_score"] is not None:
-                    sentiment_sum += msg["sentiment_score"]
-                    sentiment_count += 1
-            
-            avg_sentiment = sentiment_sum / sentiment_count if sentiment_count > 0 else 0
+                # Generate embedding
+                embedding = await self._get_message_embedding(msg.content, redis_client)
+                if embedding is not None:
+                    success_count += 1
+                else:
+                    error_count += 1
             
             return {
-                "summary": f"Conversation with {len(messages)} messages",
-                "message_count": len(messages),
-                "topics": list(topics)[:10],  # Top 10 topics
-                "dominant_emotions": list(set(emotions)),
-                "average_sentiment": avg_sentiment,
-                "sentiment_label": "positive" if avg_sentiment > 0.1 else "negative" if avg_sentiment < -0.1 else "neutral"
+                "total_messages": len(messages),
+                "success_count": success_count,
+                "error_count": error_count,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
         except Exception as e:
-            logger.error(f"Failed to generate conversation summary: {str(e)}")
+            logger.error(f"Failed to update embeddings batch: {str(e)}")
             return {
-                "summary": "Error generating summary",
-                "error": str(e)
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
-    async def cleanup_old_embeddings(
-        self,
-        redis_client: Redis,
-        days_to_keep: int = 7
-    ) -> int:
-        """Clean up old embeddings from cache"""
+    async def health_check(self) -> bool:
+        """Check if RAG service is healthy"""
         try:
-            # This would require tracking embedding keys with timestamps
-            # For now, just log the intent
-            logger.info(f"Cleanup of embeddings older than {days_to_keep} days requested")
-            return 0
-            
+            # Test embedding generation using Gemini
+            test_embedding = await self._get_message_embedding("Hello, world!")
+            return test_embedding is not None
         except Exception as e:
-            logger.error(f"Failed to cleanup old embeddings: {str(e)}")
-            return 0
+            logger.error(f"RAG health check failed: {str(e)}")
+            return False
 
 
-# Create a singleton instance
+# Create singleton instance
 rag_service = RAGService()
 
-# Export
-__all__ = ["rag_service", "RAGService"]
+# Export the service
+__all__ = ["RAGService", "rag_service"]

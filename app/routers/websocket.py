@@ -17,13 +17,14 @@ from app.database import get_db, get_redis
 from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message, MessageType, SenderType
-from app.services.openai_service import openai_service
+from app.services.gemini_service import gemini_service
 from app.services.emotion_service import emotion_service
 from app.services.rag_service import rag_service
 from app.routers.auth import verify_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 class ConnectionManager:
     """Manages WebSocket connections"""
@@ -66,6 +67,7 @@ class ConnectionManager:
         if connection_id not in self.active_connections:
             return
         
+        # Get metadata
         metadata = self.connection_metadata.get(connection_id, {})
         user_id = metadata.get("user_id")
         chat_id = metadata.get("chat_id")
@@ -75,15 +77,17 @@ class ConnectionManager:
         
         # Remove from user connections
         if user_id and user_id in self.user_connections:
-            if connection_id in self.user_connections[user_id]:
-                self.user_connections[user_id].remove(connection_id)
+            self.user_connections[user_id] = [
+                cid for cid in self.user_connections[user_id] if cid != connection_id
+            ]
             if not self.user_connections[user_id]:
                 del self.user_connections[user_id]
         
         # Remove from chat connections
         if chat_id and chat_id in self.chat_connections:
-            if connection_id in self.chat_connections[chat_id]:
-                self.chat_connections[chat_id].remove(connection_id)
+            self.chat_connections[chat_id] = [
+                cid for cid in self.chat_connections[chat_id] if cid != connection_id
+            ]
             if not self.chat_connections[chat_id]:
                 del self.chat_connections[chat_id]
         
@@ -96,92 +100,183 @@ class ConnectionManager:
     async def send_personal_message(self, message: Dict[str, Any], connection_id: str):
         """Send message to specific connection"""
         if connection_id in self.active_connections:
+            websocket = self.active_connections[connection_id]
             try:
-                websocket = self.active_connections[connection_id]
-                await websocket.send_text(json.dumps(message, default=str))
-                
-                # Update activity
+                await websocket.send_json(message)
+                # Update last activity
                 if connection_id in self.connection_metadata:
                     self.connection_metadata[connection_id]["last_activity"] = datetime.now(timezone.utc)
-                    
             except Exception as e:
-                logger.error(f"Failed to send message to {connection_id}: {str(e)}")
+                logger.error(f"Error sending message to {connection_id}: {str(e)}")
                 self.disconnect(connection_id)
     
     async def send_to_user(self, message: Dict[str, Any], user_id: int):
         """Send message to all connections of a user"""
         if user_id in self.user_connections:
-            for connection_id in self.user_connections[user_id].copy():
-                await self.send_personal_message(message, connection_id)
+            tasks = []
+            for connection_id in self.user_connections[user_id]:
+                tasks.append(self.send_personal_message(message, connection_id))
+            await asyncio.gather(*tasks, return_exceptions=True)
     
-    async def send_to_chat(self, message: Dict[str, Any], chat_id: int, exclude_connection: Optional[str] = None):
-        """Send message to all connections in a chat"""
+    async def send_to_chat(self, message: Dict[str, Any], chat_id: int):
+        """Send message to all participants in a chat"""
         if chat_id in self.chat_connections:
-            for connection_id in self.chat_connections[chat_id].copy():
-                if connection_id != exclude_connection:
-                    await self.send_personal_message(message, connection_id)
+            tasks = []
+            for connection_id in self.chat_connections[chat_id]:
+                tasks.append(self.send_personal_message(message, connection_id))
+            await asyncio.gather(*tasks, return_exceptions=True)
     
     async def broadcast(self, message: Dict[str, Any]):
         """Broadcast message to all connections"""
-        for connection_id in list(self.active_connections.keys()):
-            await self.send_personal_message(message, connection_id)
+        tasks = []
+        for connection_id in self.active_connections:
+            tasks.append(self.send_personal_message(message, connection_id))
+        await asyncio.gather(*tasks, return_exceptions=True)
     
     def get_connection_count(self) -> int:
         """Get total number of active connections"""
         return len(self.active_connections)
     
-    def get_user_connection_count(self, user_id: int) -> int:
-        """Get number of connections for a user"""
-        return len(self.user_connections.get(user_id, []))
+    def get_user_count(self) -> int:
+        """Get number of unique connected users"""
+        return len(self.user_connections)
     
-    def get_chat_connection_count(self, chat_id: int) -> int:
-        """Get number of connections in a chat"""
-        return len(self.chat_connections.get(chat_id, []))
+    def get_chat_participants(self, chat_id: int) -> List[int]:
+        """Get list of user IDs in a chat"""
+        participants = set()
+        if chat_id in self.chat_connections:
+            for connection_id in self.chat_connections[chat_id]:
+                metadata = self.connection_metadata.get(connection_id, {})
+                user_id = metadata.get("user_id")
+                if user_id:
+                    participants.add(user_id)
+        return list(participants)
     
-    def get_connection_info(self) -> Dict[str, Any]:
-        """Get information about all connections"""
-        return {
-            "total_connections": self.get_connection_count(),
-            "user_connections": {
-                user_id: len(connections) 
-                for user_id, connections in self.user_connections.items()
-            },
-            "chat_connections": {
-                chat_id: len(connections) 
-                for chat_id, connections in self.chat_connections.items()
-            },
-            "connection_details": self.connection_metadata
-        }
+    async def cleanup_stale_connections(self, timeout_seconds: int = 300):
+        """Remove connections that haven't been active"""
+        now = datetime.now(timezone.utc)
+        stale_connections = []
+        
+        for connection_id, metadata in self.connection_metadata.items():
+            last_activity = metadata.get("last_activity")
+            if last_activity and (now - last_activity).total_seconds() > timeout_seconds:
+                stale_connections.append(connection_id)
+        
+        for connection_id in stale_connections:
+            logger.info(f"Cleaning up stale connection: {connection_id}")
+            self.disconnect(connection_id)
 
-# Global connection manager
+
+# Create global connection manager
 manager = ConnectionManager()
 
-async def get_websocket_user(token: str, db: AsyncSession) -> User:
-    """Verify WebSocket token and get user"""
+
+@router.websocket("/ws/{chat_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    chat_id: int,
+    token: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis)
+):
+    """WebSocket endpoint for real-time chat"""
+    
+    connection_id = str(uuid.uuid4())
+    user = None
+    
     try:
-        payload = verify_token(token)
+        # Verify token and get user
+        user = await get_user_from_token(token, db)
+        
+        # Verify chat access
+        result = await db.execute(
+            select(Chat).where(and_(
+                Chat.id == chat_id,
+                Chat.user_id == user.id,
+                Chat.is_active == True
+            ))
+        )
+        chat = result.scalar_one_or_none()
+        
+        if not chat:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        
+        # Connect websocket
+        await manager.connect(websocket, connection_id, user.id, chat_id)
+        
+        # Send connection confirmation
+        await manager.send_personal_message({
+            "type": "connection_established",
+            "connection_id": connection_id,
+            "user_id": user.id,
+            "chat_id": chat_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }, connection_id)
+        
+        # Notify other participants
+        await manager.send_to_chat({
+            "type": "user_joined",
+            "user_id": user.id,
+            "username": user.username,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }, chat_id)
+        
+        # Main message loop
+        while True:
+            # Receive message
+            message_data = await websocket.receive_json()
+            
+            # Process message
+            response = await process_websocket_message(
+                message_data,
+                connection_id,
+                user,
+                chat,
+                db,
+                redis_client
+            )
+            
+            # Send response if any
+            if response:
+                await manager.send_personal_message(response, connection_id)
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected normally: {connection_id}")
     except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"WebSocket error: {str(e)}", exc_info=True)
+        try:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        except:
+            pass
+    finally:
+        # Clean up connection
+        manager.disconnect(connection_id)
+        
+        # Notify other participants if user was authenticated
+        if user and chat_id:
+            await manager.send_to_chat({
+                "type": "user_left",
+                "user_id": user.id,
+                "username": user.username,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }, chat_id)
+
+
+async def get_user_from_token(token: str, db: AsyncSession) -> User:
+    """Get user from JWT token"""
+    payload = verify_token(token)
     
-    user_id_str = payload.get("sub")
-    
-    if not user_id_str:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    # Convert string subject back to integer
-    try:
-        user_id = int(user_id_str)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=401, detail="Invalid user ID format")
-    
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
+    result = await db.execute(
+        select(User).where(User.id == payload.get("sub"))
+    )
     user = result.scalar_one_or_none()
     
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
     
     return user
+
 
 async def process_websocket_message(
     message_data: Dict[str, Any],
@@ -221,6 +316,7 @@ async def process_websocket_message(
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
+
 async def handle_chat_message(
     message_data: Dict[str, Any],
     connection_id: str,
@@ -229,7 +325,7 @@ async def handle_chat_message(
     db: AsyncSession,
     redis_client
 ) -> Dict[str, Any]:
-    """Handle chat message via WebSocket - FIXED VERSION"""
+    """Handle chat message via WebSocket"""
     
     content = message_data.get("content", "").strip()
     
@@ -250,71 +346,47 @@ async def handle_chat_message(
         chat_max_tokens = chat.max_tokens
         chat_system_prompt = chat.system_prompt
         
-        # Create user message
-        user_message = Message(
-            chat_id=chat_id,
-            content=content,
-            message_type=MessageType.TEXT,
-            sender_type=SenderType.USER,
-            message_metadata={
-                "source": "websocket",
-                "connection_id": connection_id
-            }
-        )
-        
-        db.add(user_message)
-        await db.flush()  # Get the ID without committing
-        
-        # Send immediate acknowledgment
-        await manager.send_personal_message({
-            "type": "message_sent",
-            "message_id": user_message.id,
-            "content": content,
-            "timestamp": user_message.created_at.isoformat(),
-            "status": "sent"
-        }, connection_id)
-        
-        # Broadcast user message to other chat participants
-        await manager.send_to_chat({
-            "type": "user_message",
-            "message_id": user_message.id,
-            "user_id": user_id,
-            "content": content,
-            "timestamp": user_message.created_at.isoformat()
-        }, chat_id, exclude_connection=connection_id)
-        
-        # Show AI typing indicator
+        # Send typing indicator
         await manager.send_to_chat({
             "type": "ai_typing",
             "chat_id": chat_id,
             "is_typing": True
         }, chat_id)
         
-        # Analyze emotion
+        # Create user message
+        user_message = Message(
+            chat_id=chat_id,
+            content=content,
+            message_type=MessageType.TEXT,
+            sender_type=SenderType.USER
+        )
+        db.add(user_message)
+        await db.flush()  # Get the ID without committing
+        
+        # Broadcast user message to all chat participants
+        await manager.send_to_chat({
+            "type": "user_message",
+            "message_id": user_message.id,
+            "user_id": user_id,
+            "content": content,
+            "timestamp": user_message.created_at.isoformat()
+        }, chat_id)
+        
+        # Emotion detection
         emotion_data = None
-        try:
-            emotion_result = await emotion_service.analyze_emotion(
-                content, 
-                context={"user_id": user_id, "chat_id": chat_id}
-            )
-            if emotion_result and emotion_result.get("success"):
+        if message_data.get("detect_emotion", True):
+            emotion_result = await emotion_service.analyze_text_emotion(content)
+            if emotion_result["success"]:
                 emotion_data = emotion_result
-                user_message.emotion_detected = emotion_data.get("primary_emotion")
-                user_message.sentiment_score = emotion_data.get("sentiment_score", 0.0)
-                user_message.confidence_score = emotion_data.get("confidence_score", 0.0)
-        except Exception as e:
-            logger.warning(f"Emotion analysis failed: {str(e)}")
         
-        # Get conversation context using RAG
+        # Get RAG context
         context_messages = []
-        user_preferences = None
-        
+        user_preferences = {}
         try:
-            # Use RAG to get relevant context
-            rag_context = await rag_service.get_context_for_chat(
-                chat_id=chat_id,
+            rag_context = await rag_service.get_context_for_query(
+                query=content,
                 user_id=user_id,
-                current_message=content,
+                chat_id=chat_id,
                 db=db,
                 redis_client=redis_client
             )
@@ -325,7 +397,7 @@ async def handle_chat_message(
         except Exception as e:
             logger.warning(f"RAG context retrieval failed: {str(e)}")
         
-        # Prepare messages for OpenAI
+        # Prepare messages for Gemini
         messages = []
         
         # Add system prompt if available
@@ -343,8 +415,8 @@ async def handle_chat_message(
         # Add current message
         messages.append({"role": "user", "content": content})
         
-        # Get AI response
-        ai_response_data = await openai_service.generate_chat_response(
+        # Get AI response using Gemini
+        ai_response_data = await gemini_service.generate_chat_response(
             messages=messages,
             model=chat_ai_model,
             temperature=chat_temperature,
@@ -450,41 +522,36 @@ async def handle_chat_message(
             "type": "error",
             "error": "Failed to process chat message"
         }
+
+
 async def handle_typing_indicator(
     message_data: Dict[str, Any],
     connection_id: str,
     user: User,
     chat: Chat,
     is_typing: bool
-) -> Optional[Dict[str, Any]]:
-    """Handle typing indicators"""
+) -> None:
+    """Handle typing indicator"""
     
-    try:
-        # Broadcast typing status to other chat participants
-        await manager.send_to_chat({
-            "type": "user_typing",
-            "user_id": user.id,
-            "username": user.username,
-            "chat_id": chat.id,
-            "is_typing": is_typing,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }, chat.id, exclude_connection=connection_id)
-        
-        return None  # No response needed
+    # Broadcast to other participants
+    await manager.send_to_chat({
+        "type": "typing_indicator",
+        "user_id": user.id,
+        "username": user.username,
+        "is_typing": is_typing,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }, chat.id)
     
-    except Exception as e:
-        logger.error(f"Failed to handle typing indicator: {str(e)}")
-        return {
-            "type": "error",
-            "error": "Failed to process typing indicator"
-        }
+    return None
+
 
 async def handle_ping(message_data: Dict[str, Any], connection_id: str) -> Dict[str, Any]:
-    """Handle ping messages"""
+    """Handle ping message"""
     return {
         "type": "pong",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
 
 async def handle_status_request(
     message_data: Dict[str, Any],
@@ -492,173 +559,32 @@ async def handle_status_request(
     user: User,
     chat: Chat
 ) -> Dict[str, Any]:
-    """Handle status requests"""
+    """Handle status request"""
+    
+    participants = manager.get_chat_participants(chat.id)
     
     return {
         "type": "status",
-        "user_id": user.id,
         "chat_id": chat.id,
-        "connection_id": connection_id,
-        "chat_info": {
-            "title": chat.title,
-            "total_messages": chat.total_messages,
-            "is_active": chat.is_active,
-            "last_activity": chat.updated_at.isoformat() if chat.updated_at else None
-        },
-        "connection_info": {
-            "connected_at": manager.connection_metadata.get(connection_id, {}).get("connected_at"),
-            "total_connections": manager.get_connection_count(),
-            "chat_connections": manager.get_chat_connection_count(chat.id)
-        },
+        "participants": participants,
+        "connection_count": len(manager.chat_connections.get(chat.id, [])),
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
-@router.websocket("/chat/{chat_id}")
-async def websocket_chat_endpoint(
-    websocket: WebSocket,
-    chat_id: int,
-    token: str = Query(..., description="JWT authentication token"),
-    db: AsyncSession = Depends(get_db),
-    redis_client = Depends(get_redis)
-):
-    """
-    WebSocket endpoint for real-time chat
-    FIXED: Proper async session handling
-    """
-    connection_id = f"{chat_id}_{datetime.now().timestamp()}"
-    
-    try:
-        # Verify authentication
-        user = await get_websocket_user(token, db)
-        
-        # Verify chat access with proper loading
-        chat_query = select(Chat).options(
-            selectinload(Chat.user)  # Eagerly load relationships
-        ).where(
-            and_(
-                Chat.id == chat_id,
-                Chat.user_id == user.id,
-                Chat.is_deleted == False,
-                Chat.is_active == True
-            )
-        )
-        
-        chat_result = await db.execute(chat_query)
-        chat = chat_result.scalar_one_or_none()
-        
-        if not chat:
-            await websocket.close(code=1008, reason="Chat not found or access denied")
-            return
-        
-        # Connect to WebSocket
-        await manager.connect(websocket, connection_id, user.id, chat_id)
-        
-        # Send connection confirmation
-        await manager.send_personal_message({
-            "type": "connected",
-            "chat_id": chat_id,
-            "user_id": user.id,
-            "connection_id": connection_id,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }, connection_id)
-        
-        # Update activity (within session context)
-        user.last_activity = datetime.now(timezone.utc)
-        chat.updated_at = datetime.now(timezone.utc)
-        await db.commit()
-        
-        # Refresh objects to ensure they're bound to the session
-        await db.refresh(user)
-        await db.refresh(chat)
-        
-        try:
-            while True:
-                # Receive message from client
-                data = await websocket.receive_text()
-                
-                try:
-                    message_data = json.loads(data)
-                except json.JSONDecodeError:
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "error": "Invalid JSON format"
-                    }, connection_id)
-                    continue
-                
-                # Process the message with fresh session
-                response = await process_websocket_message(
-                    message_data, connection_id, user, chat, db, redis_client
-                )
-                
-                # Send response if any
-                if response:
-                    await manager.send_personal_message(response, connection_id)
-            
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected normally: {connection_id}")
-        except Exception as e:
-            logger.error(f"WebSocket error: {str(e)}", exc_info=True)
-            await manager.send_personal_message({
-                "type": "error",
-                "error": "Connection error occurred"
-            }, connection_id)
-    
-    except Exception as e:
-        logger.error(f"WebSocket connection failed: {str(e)}", exc_info=True)
-        try:
-            await websocket.close(code=1011, reason="Internal server error")
-        except:
-            pass
-    
-    finally:
-        manager.disconnect(connection_id)
-
-@router.get("/connections")
-async def get_connection_info():
-    """Get WebSocket connection information (admin only)"""
-    return manager.get_connection_info()
-
-@router.post("/broadcast")
-async def broadcast_message(
-    message: Dict[str, Any],
-    # current_user: User = Depends(get_current_admin_user)  # Would need admin check
-):
-    """Broadcast message to all connections (admin only)"""
-    
-    broadcast_message = {
-        "type": "broadcast",
-        "message": message,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await manager.broadcast(broadcast_message)
-    
-    return {
-        "message": "Broadcast sent",
-        "recipients": manager.get_connection_count()
-    }
 
 # Background task to clean up stale connections
-async def cleanup_stale_connections():
-    """Clean up stale WebSocket connections"""
-    try:
-        current_time = datetime.now(timezone.utc)
-        stale_threshold = 300  # 5 minutes
-        
-        stale_connections = []
-        for connection_id, metadata in manager.connection_metadata.items():
-            last_activity = metadata.get("last_activity")
-            if last_activity:
-                time_diff = (current_time - last_activity).total_seconds()
-                if time_diff > stale_threshold:
-                    stale_connections.append(connection_id)
-        
-        for connection_id in stale_connections:
-            logger.info(f"Cleaning up stale connection: {connection_id}")
-            manager.disconnect(connection_id)
-    
-    except Exception as e:
-        logger.error(f"Error cleaning up stale connections: {str(e)}")
+async def cleanup_task():
+    """Periodic cleanup of stale connections"""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Run every minute
+            await manager.cleanup_stale_connections()
+        except Exception as e:
+            logger.error(f"Cleanup task error: {str(e)}")
 
-# Export the connection manager for use in other modules
-__all__ = ["router", "manager", "cleanup_stale_connections"]
+
+# Start cleanup task when module loads
+asyncio.create_task(cleanup_task())
+
+# Export router and manager
+__all__ = ["router", "manager"]

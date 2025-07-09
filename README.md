@@ -272,7 +272,7 @@ ai-chatbot-backend/
 │   │   ├── websocket.py   # WebSocket handlers
 │   │   └── health.py      # Health check endpoints
 │   ├── services/          # Business logic services
-│   │   ├── openai_service.py     # OpenAI integration
+│   │   ├── gemini_service.py     # Gemini integration
 │   │   ├── emotion_service.py    # Emotion detection
 │   │   ├── personalization.py   # User personalization
 │   │   ├── prompt_service.py     # Prompt management

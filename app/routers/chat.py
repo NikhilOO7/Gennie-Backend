@@ -17,7 +17,6 @@ from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message, SenderType, MessageType
 from app.routers.auth import get_current_user
-from app.services.openai_service import openai_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

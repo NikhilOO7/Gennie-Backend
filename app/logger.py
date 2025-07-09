@@ -244,7 +244,7 @@ def configure_app_loggers():
         "app.database": logging.INFO,
         
         # Detailed logging for specific services
-        "app.services.openai_service": logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO,
+        "app.services.gemini_service": logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO,
         "app.services.emotion_service": logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO,
         "app.services.personalization_service": logging.DEBUG if settings.ENVIRONMENT == "development" else logging.INFO,
         
