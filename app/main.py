@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 import uvicorn
 from typing import Dict, Any
+from app.auto_migrate import auto_migrate
 
 from app.config import settings
 from app.database import create_tables, check_db_health, check_redis_health, cleanup_database
@@ -74,6 +75,21 @@ async def lifespan(app: FastAPI):
         startup_tasks.append("Database initialization")
         await create_tables()
         logger.info("✅ Database tables created/verified")
+        # Then, check for and apply any schema changes
+        if settings.ENVIRONMENT == "development":
+            # In development, automatically create and apply migrations
+            migration_success = await auto_migrate("auto")
+            if migration_success:
+                logger.info("✅ Database schema synchronized automatically")
+            else:
+                logger.warning("⚠️  Some schema changes require manual review")
+        else:
+            # In production, only apply safe changes (new tables/columns)
+            migration_success = await auto_migrate("safe")
+            if migration_success:
+                logger.info("✅ Safe schema updates applied")
+            else:
+                logger.warning("⚠️  Schema changes detected - manual migration required")
         
         # 2. Health checks
         startup_tasks.append("Health checks")

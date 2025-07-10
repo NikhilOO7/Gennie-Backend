@@ -43,7 +43,7 @@ class Settings(BaseModel):
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
     
     # Database Settings
-    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/chatbot_db"
+    DATABASE_URL: str = "postgresql://chatbot_user:GmwemWrdiJGdtLz697sFAJsvl@localhost:5432/chatbot_db"
     DATABASE_ECHO: bool = False
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20

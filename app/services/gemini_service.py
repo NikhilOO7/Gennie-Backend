@@ -1,19 +1,33 @@
 """
-Gemini Service - Google AI Integration with Vertex AI
-Using the latest google-genai SDK with async support, streaming, and multimodal capabilities
+Gemini Service - Google AI Integration
+Using the latest google-genai SDK with proper timeout configuration
 """
 
 import asyncio
 import json
 import logging
+import os
 from typing import Dict, Any, List, Optional, Union, AsyncGenerator
 from datetime import datetime, timezone
-import os
+
+# IMPORTANT: Set environment variables before importing
+from dotenv import load_dotenv
+load_dotenv()
+
+# Force disable Vertex AI mode
+os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'false'
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = './credentials.json'
+
+# Set default timeouts to prevent the 0.06 second issue
+os.environ["DEFAULT_SOCKET_TIMEOUT"] = "60"
+os.environ["DEFAULT_TIMEOUT"] = "60"
+os.environ["GRPC_PYTHON_BUILD_SYSTEM_OPENSSL"] = "1"
+os.environ["GRPC_PYTHON_BUILD_SYSTEM_ZLIB"] = "1"
+
 from google import genai
 from google.genai.types import (
     Part,
     GenerateContentConfig,
-    HttpOptions,
     Tool,
     FunctionDeclaration,
     Content,
@@ -33,75 +47,27 @@ class GeminiService:
     """
     
     def __init__(self):
-        """Initialize Gemini service with configuration"""
+        """Initialize Gemini service exactly like the working test script"""
         try:
-            # Set timeout environment variables for Google libraries
-            os.environ["DEFAULT_SOCKET_TIMEOUT"] = "60"
-            os.environ["DEFAULT_TIMEOUT"] = "60"
+            # Get API key from environment
+            gemini_api_key = os.getenv('GEMINI_API_KEY')
+            if not gemini_api_key:
+                gemini_api_key = settings.GEMINI_API_KEY.get_secret_value() if hasattr(settings.GEMINI_API_KEY, 'get_secret_value') else str(settings.GEMINI_API_KEY)
             
-            # First, try to use API key if available (simpler, no OAuth2 issues)
-            if settings.GEMINI_API_KEY:
-                logger.info("Initializing Gemini with API key (Developer API)...")
-                
-                # Use Gemini Developer API with API key
-                os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
-                
-                api_key = settings.GEMINI_API_KEY.get_secret_value() if hasattr(settings.GEMINI_API_KEY, 'get_secret_value') else settings.GEMINI_API_KEY
-                
-                self.client = genai.Client(
-                    api_key=api_key,
-                    http_options=HttpOptions(
-                        api_version="v1",
-                        timeout=60.0,  # Increased timeout to 60 seconds
-                    )
-                )
-                
-                # Set model names for Developer API
-                self.chat_model = "gemini-1.5-flash"  # Use 1.5 for Developer API
-                self.multimodal_model = "gemini-1.5-flash"
-                self.embeddings_model = "text-embedding-004"
-                
-                logger.info("Successfully initialized Gemini with API key")
-                
-            elif settings.GOOGLE_CLOUD_PROJECT_ID and os.path.exists(settings.GOOGLE_APPLICATION_CREDENTIALS or ""):
-                logger.info("Initializing Gemini with Vertex AI...")
-                
-                # Configure environment for Vertex AI authentication
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.GOOGLE_APPLICATION_CREDENTIALS
-                os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-                os.environ["GOOGLE_CLOUD_PROJECT"] = settings.GOOGLE_CLOUD_PROJECT_ID
-                os.environ["GOOGLE_CLOUD_LOCATION"] = settings.GOOGLE_CLOUD_LOCATION
-                
-                # Initialize client with Vertex AI
-                self.client = genai.Client(
-                    vertexai=True,
-                    project=settings.GOOGLE_CLOUD_PROJECT_ID,
-                    location=settings.GOOGLE_CLOUD_LOCATION,
-                    http_options=HttpOptions(
-                        api_version="v1",
-                        timeout=60.0,  # Increased timeout to 60 seconds
-                    )
-                )
-                
-                # Set model names for Vertex AI
-                self.chat_model = "gemini-2.5-flash"
-                self.multimodal_model = "gemini-2.5-flash"
-                self.embeddings_model = "text-embedding-004"
-                
-                logger.info(f"Successfully initialized Gemini with Vertex AI in {settings.GOOGLE_CLOUD_LOCATION}")
-                
-            else:
-                # Fallback error message
-                error_msg = (
-                    "Gemini service requires either:\n"
-                    "1. GEMINI_API_KEY for Developer API (recommended), or\n"
-                    "2. GOOGLE_CLOUD_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS for Vertex AI\n"
-                    "Please set one of these in your .env file."
-                )
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+            if not gemini_api_key:
+                raise ValueError("GEMINI_API_KEY environment variable not set.")
             
-            # Common configuration
+            # Initialize client with just API key (like test script)
+            self.client = genai.Client(api_key=gemini_api_key)
+            
+            # Set model names
+            self.chat_model = "gemini-1.5-flash-latest"
+            self.multimodal_model = "gemini-1.5-flash-latest"
+            self.embeddings_model = "text-embedding-004"
+            
+            logger.info("✓ Gemini client initialized (Developer API mode)")
+            
+            # Configuration
             self.embeddings_dimension = 768
             self.default_temperature = settings.GEMINI_TEMPERATURE
             self.default_max_tokens = settings.GEMINI_MAX_TOKENS
@@ -140,76 +106,51 @@ class GeminiService:
     
     async def health_check(self) -> bool:
         """
-        Check if Gemini service is healthy
-        
-        Returns:
-            True if healthy, False otherwise
+        Simple health check matching the test script approach
         """
         try:
-            # For API key mode, skip health check if not properly initialized
             if not hasattr(self, 'client') or self.client is None:
-                logger.warning("Gemini client not initialized, skipping health check")
+                logger.warning("Gemini client not initialized")
                 return False
             
-            # Simple health check with minimal content
-            test_content = "Hi"
+            # Use synchronous call in an executor to avoid timeout issues
+            loop = asyncio.get_event_loop()
             
-            # Try to generate a simple response with a short timeout
-            try:
-                # Create a task for the API call
-                api_task = asyncio.create_task(
-                    self.client.aio.models.generate_content(
+            def sync_test():
+                try:
+                    response = self.client.models.generate_content(
                         model=self.chat_model,
-                        contents=[test_content],
-                        config=GenerateContentConfig(
-                            max_output_tokens=5,
-                            temperature=0.0,
-                            top_p=0.1,
-                            top_k=1,
-                        ),
+                        contents="Explain how AI works in a few words"
                     )
-                )
-                
-                # Wait for the task with timeout
-                response = await asyncio.wait_for(api_task, timeout=30.0)
-                
-                # Check if we got a valid response
-                if hasattr(response, 'text'):
-                    logger.info("Gemini health check passed")
-                    return True
-                else:
-                    logger.warning("Gemini health check failed: No response text")
+                    return hasattr(response, 'text') and bool(response.text)
+                except Exception as e:
+                    logger.error(f"Sync health check error: {e}")
                     return False
-                    
-            except asyncio.TimeoutError:
-                logger.error("Gemini health check timed out after 30 seconds")
-                # Cancel the task if it's still running
-                if not api_task.done():
-                    api_task.cancel()
-                return False
-                
+            
+            # Run synchronous code in executor
+            result = await loop.run_in_executor(None, sync_test)
+            
+            if result:
+                logger.info("✓ Gemini health check passed")
+            else:
+                logger.warning("✗ Gemini health check failed")
+            
+            return result
+            
         except Exception as e:
-            logger.error(f"Gemini health check failed: {type(e).__name__}: {str(e)}")
-            # Don't fail the entire startup for health check failures
+            logger.error(f"Gemini health check error: {type(e).__name__}: {str(e)}")
             return False
     
     async def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get information about the current model
-        
-        Returns:
-            Model information dictionary
-        """
+        """Get information about the current model"""
         return {
             "chat_model": self.chat_model,
             "multimodal_model": self.multimodal_model,
             "embeddings_model": self.embeddings_model,
             "embeddings_dimension": self.embeddings_dimension,
-            "location": settings.GOOGLE_CLOUD_LOCATION,
-            "project": settings.GOOGLE_CLOUD_PROJECT_ID,
             "api_version": "v1",
-            "timeout": 60.0,
-            "using_vertex_ai": os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() == "true"
+            "using_vertex_ai": False,
+            "mode": "Developer API"
         }
     
     def _convert_messages_to_contents(self, messages: List[Dict[str, str]]) -> List[Content]:
@@ -399,11 +340,14 @@ class GeminiService:
             
             # Add thinking configuration for Gemini 2.5 models if enabled
             if settings.GEMINI_ENABLE_THINKING and "2.5" in (model or self.chat_model):
-                from google.genai.types import ThinkingConfig
-                config.thinking_config = ThinkingConfig(
-                    thinking_budget=settings.GEMINI_THINKING_BUDGET,
-                    include_thoughts=False  # Don't include thoughts in response
-                )
+                try:
+                    from google.genai.types import ThinkingConfig
+                    config.thinking_config = ThinkingConfig(
+                        thinking_budget=settings.GEMINI_THINKING_BUDGET,
+                        include_thoughts=False  # Don't include thoughts in response
+                    )
+                except ImportError:
+                    logger.debug("ThinkingConfig not available in current SDK version")
             
             if stream:
                 # Handle streaming response
@@ -417,7 +361,7 @@ class GeminiService:
                     contents=contents,
                     config=config,
                 )
-                
+
                 # Extract response data
                 response_text = response.text if hasattr(response, 'text') else ""
                 
@@ -652,6 +596,63 @@ class GeminiService:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
+    async def generate_conversation_title(
+        self,
+        messages: List[Dict[str, str]],
+        max_length: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Generate a title for a conversation
+        
+        Args:
+            messages: List of message dictionaries
+            max_length: Maximum length of title
+            
+        Returns:
+            Title response
+        """
+        try:
+            # Create title generation prompt
+            title_prompt = "Generate a concise, descriptive title (3-6 words) for this conversation. Reply with ONLY the title, no quotes or additional text."
+            
+            # Take only the first few messages for title generation
+            context_messages = messages[:3] if len(messages) > 3 else messages
+            
+            # Generate title
+            result = await self.generate_chat_response(
+                messages=[
+                    {"role": "system", "content": title_prompt},
+                    *context_messages,
+                    {"role": "user", "content": "Generate a title for this conversation."}
+                ],
+                temperature=0.3,
+                max_tokens=20
+            )
+            
+            if result["success"]:
+                title = result["response"].strip()
+                # Clean up the title
+                title = title.replace('"', '').replace("'", '').strip()
+                if len(title) > max_length:
+                    title = title[:max_length-3] + "..."
+                
+                return {
+                    "success": True,
+                    "title": title,
+                    "processing_time": result["processing_time"],
+                    "tokens_used": result["tokens_used"]["total_tokens"]
+                }
+            else:
+                return result
+        
+        except Exception as e:
+            logger.error(f"Title generation failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+    
     async def summarize_conversation(
         self,
         messages: List[Dict[str, str]],
@@ -749,6 +750,8 @@ except Exception as e:
         async def analyze_multimodal_content(self, *args, **kwargs):
             return {"success": False, "error": "Gemini service not initialized"}
         async def generate_with_tools(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        async def generate_conversation_title(self, *args, **kwargs):
             return {"success": False, "error": "Gemini service not initialized"}
         async def summarize_conversation(self, *args, **kwargs):
             return {"success": False, "error": "Gemini service not initialized"}

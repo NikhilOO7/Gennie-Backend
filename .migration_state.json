@@ -1,0 +1,11 @@
+{
+  "hash": "450dc051c1e90718903d391179f18878",
+  "last_migration": "2025-07-10T18:57:41.295059",
+  "tables": [
+    "users",
+    "messages",
+    "chats",
+    "user_preferences",
+    "emotions"
+  ]
+}
