@@ -34,53 +34,324 @@ class GeminiService:
     
     def __init__(self):
         """Initialize Gemini service with configuration"""
-        # Set environment variables for Vertex AI
-        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-        os.environ["GOOGLE_CLOUD_PROJECT"] = settings.GOOGLE_CLOUD_PROJECT_ID
-        os.environ["GOOGLE_CLOUD_LOCATION"] = settings.GOOGLE_CLOUD_LOCATION
+        try:
+            # Set timeout environment variables for Google libraries
+            os.environ["DEFAULT_SOCKET_TIMEOUT"] = "60"
+            os.environ["DEFAULT_TIMEOUT"] = "60"
+            
+            # First, try to use API key if available (simpler, no OAuth2 issues)
+            if settings.GEMINI_API_KEY:
+                logger.info("Initializing Gemini with API key (Developer API)...")
+                
+                # Use Gemini Developer API with API key
+                os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
+                
+                api_key = settings.GEMINI_API_KEY.get_secret_value() if hasattr(settings.GEMINI_API_KEY, 'get_secret_value') else settings.GEMINI_API_KEY
+                
+                self.client = genai.Client(
+                    api_key=api_key,
+                    http_options=HttpOptions(
+                        api_version="v1",
+                        timeout=60.0,  # Increased timeout to 60 seconds
+                    )
+                )
+                
+                # Set model names for Developer API
+                self.chat_model = "gemini-1.5-flash"  # Use 1.5 for Developer API
+                self.multimodal_model = "gemini-1.5-flash"
+                self.embeddings_model = "text-embedding-004"
+                
+                logger.info("Successfully initialized Gemini with API key")
+                
+            elif settings.GOOGLE_CLOUD_PROJECT_ID and os.path.exists(settings.GOOGLE_APPLICATION_CREDENTIALS or ""):
+                logger.info("Initializing Gemini with Vertex AI...")
+                
+                # Configure environment for Vertex AI authentication
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.GOOGLE_APPLICATION_CREDENTIALS
+                os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+                os.environ["GOOGLE_CLOUD_PROJECT"] = settings.GOOGLE_CLOUD_PROJECT_ID
+                os.environ["GOOGLE_CLOUD_LOCATION"] = settings.GOOGLE_CLOUD_LOCATION
+                
+                # Initialize client with Vertex AI
+                self.client = genai.Client(
+                    vertexai=True,
+                    project=settings.GOOGLE_CLOUD_PROJECT_ID,
+                    location=settings.GOOGLE_CLOUD_LOCATION,
+                    http_options=HttpOptions(
+                        api_version="v1",
+                        timeout=60.0,  # Increased timeout to 60 seconds
+                    )
+                )
+                
+                # Set model names for Vertex AI
+                self.chat_model = "gemini-2.5-flash"
+                self.multimodal_model = "gemini-2.5-flash"
+                self.embeddings_model = "text-embedding-004"
+                
+                logger.info(f"Successfully initialized Gemini with Vertex AI in {settings.GOOGLE_CLOUD_LOCATION}")
+                
+            else:
+                # Fallback error message
+                error_msg = (
+                    "Gemini service requires either:\n"
+                    "1. GEMINI_API_KEY for Developer API (recommended), or\n"
+                    "2. GOOGLE_CLOUD_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS for Vertex AI\n"
+                    "Please set one of these in your .env file."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Common configuration
+            self.embeddings_dimension = 768
+            self.default_temperature = settings.GEMINI_TEMPERATURE
+            self.default_max_tokens = settings.GEMINI_MAX_TOKENS
+            self.default_top_p = settings.GEMINI_TOP_P
+            
+            # Safety settings
+            self.safety_settings = [
+                SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                ),
+                SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                ),
+                SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                ),
+                SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                ),
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Gemini service: {str(e)}")
+            raise
+    
+    async def cleanup(self):
+        """Cleanup resources when shutting down"""
+        try:
+            logger.info("Gemini service cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during Gemini service cleanup: {str(e)}")
+    
+    async def health_check(self) -> bool:
+        """
+        Check if Gemini service is healthy
         
-        # Initialize client with Vertex AI
-        self.client = genai.Client(
-            vertexai=True,
-            project=settings.GOOGLE_CLOUD_PROJECT_ID,
-            location=settings.GOOGLE_CLOUD_LOCATION,
-            http_options=HttpOptions(
-                api_version="v1",  # Use stable API version
-                timeout=60.0,
-            )
-        )
+        Returns:
+            True if healthy, False otherwise
+        """
+        try:
+            # For API key mode, skip health check if not properly initialized
+            if not hasattr(self, 'client') or self.client is None:
+                logger.warning("Gemini client not initialized, skipping health check")
+                return False
+            
+            # Simple health check with minimal content
+            test_content = "Hi"
+            
+            # Try to generate a simple response with a short timeout
+            try:
+                # Create a task for the API call
+                api_task = asyncio.create_task(
+                    self.client.aio.models.generate_content(
+                        model=self.chat_model,
+                        contents=[test_content],
+                        config=GenerateContentConfig(
+                            max_output_tokens=5,
+                            temperature=0.0,
+                            top_p=0.1,
+                            top_k=1,
+                        ),
+                    )
+                )
+                
+                # Wait for the task with timeout
+                response = await asyncio.wait_for(api_task, timeout=30.0)
+                
+                # Check if we got a valid response
+                if hasattr(response, 'text'):
+                    logger.info("Gemini health check passed")
+                    return True
+                else:
+                    logger.warning("Gemini health check failed: No response text")
+                    return False
+                    
+            except asyncio.TimeoutError:
+                logger.error("Gemini health check timed out after 30 seconds")
+                # Cancel the task if it's still running
+                if not api_task.done():
+                    api_task.cancel()
+                return False
+                
+        except Exception as e:
+            logger.error(f"Gemini health check failed: {type(e).__name__}: {str(e)}")
+            # Don't fail the entire startup for health check failures
+            return False
+    
+    async def get_model_info(self) -> Dict[str, Any]:
+        """
+        Get information about the current model
         
-        # Model configurations
-        self.chat_model = "gemini-2.0-flash-001"  # Latest Gemini 2.0 Flash model
-        self.multimodal_model = "gemini-2.0-flash-001"  # Flash supports multimodal
-        self.embeddings_dimension = 768  # Gemini embeddings dimension
+        Returns:
+            Model information dictionary
+        """
+        return {
+            "chat_model": self.chat_model,
+            "multimodal_model": self.multimodal_model,
+            "embeddings_model": self.embeddings_model,
+            "embeddings_dimension": self.embeddings_dimension,
+            "location": settings.GOOGLE_CLOUD_LOCATION,
+            "project": settings.GOOGLE_CLOUD_PROJECT_ID,
+            "api_version": "v1",
+            "timeout": 60.0,
+            "using_vertex_ai": os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() == "true"
+        }
+    
+    def _convert_messages_to_contents(self, messages: List[Dict[str, str]]) -> List[Content]:
+        """
+        Convert OpenAI-style messages to Gemini contents
         
-        # Default parameters
-        self.default_temperature = settings.OPENAI_TEMPERATURE  # Reuse existing setting
-        self.default_max_tokens = settings.OPENAI_MAX_TOKENS
-        self.default_top_p = settings.OPENAI_TOP_P
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            
+        Returns:
+            List of Gemini Content objects
+        """
+        contents = []
         
-        # Safety settings - configure based on your requirements
-        self.safety_settings = [
-            SafetySetting(
-                category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            ),
-            SafetySetting(
-                category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            ),
-            SafetySetting(
-                category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            ),
-            SafetySetting(
-                category=HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            ),
-        ]
+        for message in messages:
+            role = message.get("role", "user")
+            content = message.get("content", "")
+            
+            # Map roles
+            if role == "system":
+                # System messages handled separately in Gemini
+                continue
+            elif role == "assistant":
+                role = "model"
+            else:
+                role = "user"
+            
+            # Create content
+            contents.append(Content(parts=[Part.from_text(content)], role=role))
         
-        logger.info(f"Gemini service initialized with model: {self.chat_model}")
+        return contents
+    
+    def _extract_system_instruction(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        """
+        Extract system instruction from messages
+        
+        Args:
+            messages: List of message dictionaries
+            
+        Returns:
+            System instruction if found, None otherwise
+        """
+        for message in messages:
+            if message.get("role") == "system":
+                return message.get("content")
+        return None
+    
+    def _estimate_token_count(self, text: str) -> int:
+        """
+        Estimate token count for text
+        
+        Args:
+            text: Text to estimate tokens for
+            
+        Returns:
+            Estimated token count
+        """
+        # Rough estimation: ~4 characters per token
+        return len(text) // 4
+    
+    def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """
+        Estimate total tokens from messages
+        
+        Args:
+            messages: List of message dictionaries
+            
+        Returns:
+            Estimated total token count
+        """
+        total_chars = sum(len(msg.get("content", "")) for msg in messages)
+        return total_chars // 4
+    
+    async def _handle_streaming_response(
+        self,
+        contents: List[Content],
+        config: GenerateContentConfig,
+        model: Optional[str],
+        start_time: datetime,
+        input_tokens: int
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Handle streaming response from Gemini
+        
+        Args:
+            contents: Content to generate from
+            config: Generation configuration
+            model: Model to use
+            start_time: Request start time
+            input_tokens: Number of input tokens
+            
+        Yields:
+            Response chunks
+        """
+        try:
+            response_text = ""
+            chunk_count = 0
+            
+            async for chunk in self.client.aio.models.generate_content_stream(
+                model=model or self.chat_model,
+                contents=contents,
+                config=config,
+            ):
+                chunk_count += 1
+                chunk_text = chunk.text if hasattr(chunk, 'text') else ""
+                response_text += chunk_text
+                
+                yield {
+                    "success": True,
+                    "content": chunk_text,
+                    "chunk_index": chunk_count,
+                    "finish_reason": None,
+                    "model_used": model or self.chat_model
+                }
+            
+            # Final chunk with token usage
+            output_tokens = self._estimate_token_count(response_text)
+            total_tokens = input_tokens + output_tokens
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+            
+            yield {
+                "success": True,
+                "content": "",
+                "chunk_index": chunk_count + 1,
+                "finish_reason": "stop",
+                "tokens_used": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens
+                },
+                "processing_time": processing_time,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Streaming generation failed: {str(e)}")
+            yield {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
     
     async def generate_chat_response(
         self,
@@ -88,50 +359,36 @@ class GeminiService:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
-        frequency_penalty: Optional[float] = None,  # Not used in Gemini
-        presence_penalty: Optional[float] = None,   # Not used in Gemini
-        model: Optional[str] = None,
         stream: bool = False,
-        user_id: Optional[str] = None,
+        model: Optional[str] = None,
         **kwargs
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
         """
-        Generate chat response compatible with OpenAI interface
+        Generate a chat response using Gemini
         
         Args:
-            messages: List of message dictionaries with 'role' and 'content'
-            temperature: Sampling temperature (0-2)
+            messages: List of message dictionaries
+            temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
-            top_p: Nucleus sampling parameter
-            model: Model to use (defaults to configured model)
+            top_p: Top-p sampling parameter
             stream: Whether to stream the response
-            user_id: User ID for tracking
+            model: Model to use (optional)
             **kwargs: Additional parameters
             
         Returns:
-            Dictionary with response data matching OpenAI format
+            Response dictionary or async generator for streaming
         """
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Validate messages
-            if not messages or not isinstance(messages, list):
-                raise ValueError("Messages must be a non-empty list")
-            
             # Convert messages to Gemini format
             contents = self._convert_messages_to_contents(messages)
+            system_instruction = self._extract_system_instruction(messages)
             
-            # Extract system instruction if present
-            system_instruction = None
-            for msg in messages:
-                if msg.get("role") == "system":
-                    system_instruction = msg.get("content")
-                    break
-            
-            # Count input tokens (approximate)
+            # Estimate input tokens
             input_tokens = self._estimate_tokens(messages)
             
-            # Prepare generation config
+            # Create generation config
             config = GenerateContentConfig(
                 temperature=temperature if temperature is not None else self.default_temperature,
                 max_output_tokens=max_tokens if max_tokens is not None else self.default_max_tokens,
@@ -140,9 +397,17 @@ class GeminiService:
                 safety_settings=self.safety_settings,
             )
             
+            # Add thinking configuration for Gemini 2.5 models if enabled
+            if settings.GEMINI_ENABLE_THINKING and "2.5" in (model or self.chat_model):
+                from google.genai.types import ThinkingConfig
+                config.thinking_config = ThinkingConfig(
+                    thinking_budget=settings.GEMINI_THINKING_BUDGET,
+                    include_thoughts=False  # Don't include thoughts in response
+                )
+            
             if stream:
                 # Handle streaming response
-                return await self._handle_streaming_response(
+                return self._handle_streaming_response(
                     contents, config, model, start_time, input_tokens
                 )
             else:
@@ -191,348 +456,221 @@ class GeminiService:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
-    async def _handle_streaming_response(
+    async def generate_embeddings(
         self,
-        contents: List[Any],
-        config: GenerateContentConfig,
-        model: Optional[str],
-        start_time: datetime,
-        input_tokens: int
+        text: Union[str, List[str]],
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Handle streaming response from Gemini"""
+        """
+        Generate embeddings for text
+        
+        Args:
+            text: Text or list of texts to embed
+            model: Model to use (optional)
+            
+        Returns:
+            Dictionary with embeddings
+        """
+        start_time = datetime.now(timezone.utc)
         
         try:
-            chunks = []
+            # Ensure text is a list
+            texts = [text] if isinstance(text, str) else text
             
-            # Use async streaming
-            async for chunk in self.client.aio.models.generate_content_stream(
-                model=model or self.chat_model,
+            # Generate embeddings
+            response = await self.client.aio.models.embed_content(
+                model=model or self.embeddings_model,
+                contents=texts,
+            )
+            
+            # Extract embeddings
+            embeddings = []
+            if hasattr(response, 'embeddings'):
+                for embedding in response.embeddings:
+                    embeddings.append(embedding.values)
+            
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+            
+            return {
+                "success": True,
+                "embeddings": embeddings,
+                "model_used": model or self.embeddings_model,
+                "dimension": self.embeddings_dimension,
+                "processing_time": processing_time,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Embedding generation failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds(),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+    
+    async def analyze_multimodal_content(
+        self,
+        text: str,
+        media_url: Optional[str] = None,
+        media_type: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Analyze multimodal content (text + image/video/audio)
+        
+        Args:
+            text: Text prompt
+            media_url: URL to media file (GCS URL preferred)
+            media_type: MIME type of media
+            **kwargs: Additional parameters
+            
+        Returns:
+            Analysis response
+        """
+        start_time = datetime.now(timezone.utc)
+        
+        try:
+            # Create parts
+            parts = [Part.from_text(text)]
+            
+            if media_url and media_type:
+                # Add media part
+                parts.append(Part.from_uri(uri=media_url, mime_type=media_type))
+            
+            # Create content
+            contents = [Content(parts=parts, role="user")]
+            
+            # Generate response
+            response = await self.client.aio.models.generate_content(
+                model=self.multimodal_model,
+                contents=contents,
+                config=GenerateContentConfig(
+                    temperature=kwargs.get("temperature", 0.7),
+                    max_output_tokens=kwargs.get("max_tokens", 1000),
+                    safety_settings=self.safety_settings,
+                ),
+            )
+            
+            # Extract response
+            response_text = response.text if hasattr(response, 'text') else ""
+            
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
+            
+            return {
+                "success": True,
+                "analysis": response_text,
+                "model_used": self.multimodal_model,
+                "media_analyzed": media_url is not None,
+                "processing_time": processing_time,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Multimodal analysis failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds(),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+    
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Tool],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Generate response with function calling/tools
+        
+        Args:
+            messages: List of message dictionaries
+            tools: List of Tool objects
+            **kwargs: Additional parameters
+            
+        Returns:
+            Response with potential tool calls
+        """
+        start_time = datetime.now(timezone.utc)
+        
+        try:
+            # Convert messages
+            contents = self._convert_messages_to_contents(messages)
+            system_instruction = self._extract_system_instruction(messages)
+            
+            # Create config with tools
+            config = GenerateContentConfig(
+                temperature=kwargs.get("temperature", self.default_temperature),
+                max_output_tokens=kwargs.get("max_tokens", self.default_max_tokens),
+                system_instruction=system_instruction,
+                tools=tools,
+                safety_settings=self.safety_settings,
+            )
+            
+            # Generate response
+            response = await self.client.aio.models.generate_content(
+                model=kwargs.get("model", self.chat_model),
                 contents=contents,
                 config=config,
-            ):
-                if hasattr(chunk, 'text') and chunk.text:
-                    chunks.append(chunk.text)
+            )
             
-            response_text = "".join(chunks)
-            output_tokens = self._estimate_token_count(response_text)
-            total_tokens = input_tokens + output_tokens
+            # Extract response and tool calls
+            response_text = response.text if hasattr(response, 'text') else ""
+            tool_calls = []
+            
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate.content, 'parts'):
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'function_call'):
+                            tool_calls.append({
+                                "name": part.function_call.name,
+                                "arguments": dict(part.function_call.args)
+                            })
             
             processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             return {
                 "success": True,
                 "response": response_text,
-                "tokens_used": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens
-                },
-                "model_used": model or self.chat_model,
-                "processing_time": processing_time,
-                "stream": True,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        
-        except Exception as e:
-            logger.error(f"Streaming response failed: {str(e)}", exc_info=True)
-            raise
-    
-    async def generate_embeddings(
-        self,
-        texts: Union[str, List[str]],
-        model: Optional[str] = None,
-        user_id: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Generate embeddings for text(s)
-        Note: Gemini uses a different approach for embeddings
-        
-        Args:
-            texts: Text or list of texts to embed
-            model: Model to use
-            user_id: User ID for tracking
-            **kwargs: Additional parameters
-            
-        Returns:
-            Dictionary with embedding data
-        """
-        start_time = datetime.now(timezone.utc)
-        
-        try:
-            # Ensure texts is a list
-            if isinstance(texts, str):
-                texts = [texts]
-            
-            # Validate input
-            if not texts:
-                raise ValueError("No texts provided for embedding")
-            
-            # For now, return mock embeddings as Gemini embeddings work differently
-            # You would need to use a specific embedding model or endpoint
-            embeddings = []
-            for text in texts:
-                # Generate a mock embedding of the correct dimension
-                embedding = [0.1] * self.embeddings_dimension
-                embeddings.append(embedding)
-            
-            total_tokens = sum(self._estimate_token_count(text) for text in texts)
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            
-            logger.info(f"Generated embeddings for {len(texts)} texts")
-            
-            return {
-                "success": True,
-                "embeddings": embeddings,
-                "model": "gemini-embedding",
-                "dimensions": self.embeddings_dimension,
-                "tokens_used": total_tokens,
+                "tool_calls": tool_calls,
+                "model_used": kwargs.get("model", self.chat_model),
                 "processing_time": processing_time,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-        
+            
         except Exception as e:
-            logger.error(f"Embedding generation failed: {str(e)}", exc_info=True)
+            logger.error(f"Tool generation failed: {str(e)}")
             return {
                 "success": False,
                 "error": str(e),
                 "error_type": type(e).__name__,
-                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds()
-            }
-    
-    async def analyze_image_with_text(
-        self,
-        image_data: bytes,
-        prompt: str,
-        mime_type: str = "image/jpeg",
-        model: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Analyze image with text prompt (multimodal)
-        
-        Args:
-            image_data: Image bytes
-            prompt: Text prompt
-            mime_type: MIME type of the image
-            model: Model to use
-            **kwargs: Additional parameters
-            
-        Returns:
-            Dictionary with analysis results
-        """
-        start_time = datetime.now(timezone.utc)
-        
-        try:
-            # Create image part
-            image_part = Part.from_bytes(
-                data=image_data,
-                mime_type=mime_type
-            )
-            
-            # Create content with text and image
-            contents = [
-                Part.from_text(prompt),
-                image_part
-            ]
-            
-            # Generate response
-            response = await self.client.aio.models.generate_content(
-                model=model or self.multimodal_model,
-                contents=contents,
-                config=GenerateContentConfig(
-                    temperature=0.4,
-                    max_output_tokens=1000,
-                    safety_settings=self.safety_settings,
-                ),
-            )
-            
-            response_text = response.text if hasattr(response, 'text') else ""
-            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-            
-            return {
-                "success": True,
-                "analysis": response_text,
-                "model_used": model or self.multimodal_model,
-                "processing_time": processing_time,
+                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds(),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-        
-        except Exception as e:
-            logger.error(f"Image analysis failed: {str(e)}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "processing_time": (datetime.now(timezone.utc) - start_time).total_seconds()
-            }
     
-    async def count_tokens(
-        self,
-        contents: Union[str, List[Dict[str, str]]],
-        model: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Count tokens for content
-        
-        Args:
-            contents: Text or messages to count tokens for
-            model: Model to use for counting
-            
-        Returns:
-            Dictionary with token count
-        """
-        try:
-            # If contents is a string, convert to proper format
-            if isinstance(contents, str):
-                formatted_contents = [Part.from_text(contents)]
-            else:
-                # Convert messages to contents format
-                formatted_contents = self._convert_messages_to_contents(contents)
-            
-            # Use the count_tokens method
-            response = await self.client.aio.models.count_tokens(
-                model=model or self.chat_model,
-                contents=formatted_contents,
-            )
-            
-            # Extract token count from response
-            total_tokens = response.total_tokens if hasattr(response, 'total_tokens') else 0
-            
-            return {
-                "success": True,
-                "total_tokens": total_tokens,
-                "model": model or self.chat_model
-            }
-        
-        except Exception as e:
-            # If official token counting fails, use estimation
-            logger.warning(f"Token counting failed, using estimation: {str(e)}")
-            
-            if isinstance(contents, str):
-                estimated_tokens = self._estimate_token_count(contents)
-            else:
-                estimated_tokens = self._estimate_tokens(contents)
-            
-            return {
-                "success": True,
-                "total_tokens": estimated_tokens,
-                "model": model or self.chat_model,
-                "estimated": True
-            }
-    
-    def _convert_messages_to_contents(self, messages: List[Dict[str, str]]) -> List[Part]:
-        """Convert OpenAI-style messages to Gemini contents format"""
-        contents = []
-        
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            
-            # Skip system messages as they're handled separately
-            if role == "system":
-                continue
-            
-            # Convert assistant messages to model role
-            if role == "assistant":
-                # In Gemini, we just add the content as text
-                contents.append(Part.from_text(content))
-            else:
-                # User messages
-                contents.append(Part.from_text(content))
-        
-        return contents
-    
-    def _estimate_tokens(self, messages: List[Dict[str, str]]) -> int:
-        """Estimate token count for messages"""
-        total_tokens = 0
-        
-        for msg in messages:
-            content = msg.get("content", "")
-            total_tokens += self._estimate_token_count(content)
-            # Add some tokens for message structure
-            total_tokens += 4
-        
-        return total_tokens
-    
-    def _estimate_token_count(self, text: str) -> int:
-        """Estimate token count for a text string"""
-        # Rough estimation: 1 token ≈ 4 characters
-        return len(text) // 4
-    
-    async def generate_conversation_title(
+    async def summarize_conversation(
         self,
         messages: List[Dict[str, str]],
-        max_length: int = 50
+        max_length: int = 200
     ) -> Dict[str, Any]:
         """
-        Generate a title for the conversation
+        Summarize a conversation
         
         Args:
-            messages: Conversation messages
-            max_length: Maximum title length
+            messages: List of message dictionaries
+            max_length: Maximum length of summary
             
         Returns:
-            Dictionary with title generation result
+            Summary response
         """
         try:
-            # Create a prompt for title generation
-            title_prompt = """Based on this conversation, generate a concise title (max 50 characters) that captures the main topic. 
-            Return only the title, no quotes or additional text."""
-            
-            # Add recent messages context
-            recent_messages = messages[-5:] if len(messages) > 5 else messages
-            context = "\n".join([f"{msg['role']}: {msg['content'][:100]}..." for msg in recent_messages])
-            
-            # Generate title
-            result = await self.generate_chat_response(
-                messages=[
-                    {"role": "system", "content": title_prompt},
-                    {"role": "user", "content": f"Conversation:\n{context}"}
-                ],
-                temperature=0.7,
-                max_tokens=20
-            )
-            
-            if result["success"]:
-                title = result["response"].strip()
-                if len(title) > max_length:
-                    title = title[:max_length-3] + "..."
-                
-                return {
-                    "success": True,
-                    "title": title,
-                    "processing_time": result["processing_time"]
-                }
-            else:
-                return result
-        
-        except Exception as e:
-            logger.error(f"Title generation failed: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-    
-    async def generate_conversation_summary(
-        self,
-        messages: List[Dict[str, str]],
-        max_length: int = 150
-    ) -> Dict[str, Any]:
-        """
-        Generate a summary of the conversation
-        
-        Args:
-            messages: Conversation messages
-            max_length: Maximum summary length
-            
-        Returns:
-            Dictionary with summary
-        """
-        try:
-            summary_prompt = """Summarize this conversation in 2-3 sentences. 
-            Focus on the main topics discussed and key points. Be concise but comprehensive."""
+            # Create summarization prompt
+            summary_prompt = f"""Summarize this conversation in {max_length} characters or less.
+Focus on the main topics discussed and key points. Be concise but comprehensive."""
             
             # Generate summary
             result = await self.generate_chat_response(
@@ -567,30 +705,6 @@ class GeminiService:
                 "error_type": type(e).__name__
             }
     
-    async def health_check(self) -> bool:
-        """
-        Check if Gemini service is healthy
-        
-        Returns:
-            True if healthy, False otherwise
-        """
-        try:
-            # Try a simple generation
-            response = await self.client.aio.models.generate_content(
-                model=self.chat_model,
-                contents=[Part.from_text("Hi")],
-                config=GenerateContentConfig(
-                    max_output_tokens=10,
-                    temperature=0.1,
-                ),
-            )
-            
-            return hasattr(response, 'text') and len(response.text) > 0
-            
-        except Exception as e:
-            logger.error(f"Health check failed: {str(e)}")
-            return False
-    
     def count_tokens_from_messages(self, messages: List[Dict[str, str]]) -> int:
         """
         Count tokens from a list of messages (for compatibility)
@@ -616,4 +730,31 @@ class GeminiService:
         return self._estimate_token_count(text)
 
 # Create a singleton instance
-gemini_service = GeminiService()
+try:
+    gemini_service = GeminiService()
+except Exception as e:
+    logger.error(f"Failed to create Gemini service instance: {str(e)}")
+    # Create a dummy service that will fail health checks but won't crash the app
+    class DummyGeminiService:
+        async def health_check(self):
+            return False
+        async def cleanup(self):
+            pass
+        async def get_model_info(self):
+            return {"error": "Service not initialized"}
+        async def generate_chat_response(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        async def generate_embeddings(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        async def analyze_multimodal_content(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        async def generate_with_tools(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        async def summarize_conversation(self, *args, **kwargs):
+            return {"success": False, "error": "Gemini service not initialized"}
+        def count_tokens_from_messages(self, messages):
+            return 0
+        def count_tokens(self, text):
+            return 0
+    
+    gemini_service = DummyGeminiService()

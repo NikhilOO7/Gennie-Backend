@@ -64,17 +64,23 @@ class Settings(BaseModel):
     GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./credentials.json")
     GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     GEMINI_API_KEY: Optional[SecretStr] = SecretStr(os.getenv("GEMINI_API_KEY", "")) if os.getenv("GEMINI_API_KEY") else None
+
+    # Timeout Configuration
+    GEMINI_REQUEST_TIMEOUT: int = 30
+    GEMINI_HEALTH_CHECK_TIMEOUT: int = 10
     
-    # OpenAI Settings (kept for backward compatibility and configuration reuse)
-    OPENAI_API_KEY: SecretStr = SecretStr(os.getenv("OPENAI_API_KEY", "your-openai-api-key"))
-    OPENAI_MODEL: str = "gpt-3.5-turbo"
-    OPENAI_TEMPERATURE: float = 0.7
-    OPENAI_MAX_TOKENS: int = 1000
-    OPENAI_TOP_P: float = 1.0
-    OPENAI_FREQUENCY_PENALTY: float = 0.0
-    OPENAI_PRESENCE_PENALTY: float = 0.0
-    OPENAI_TIMEOUT: int = 30
-    OPENAI_MAX_RETRIES: int = 3
+    # Gemini Model Settings (NEW - June 2025 Configuration)
+    GEMINI_TEMPERATURE: float = 0.7
+    GEMINI_MAX_TOKENS: int = 1000
+    GEMINI_TOP_P: float = 0.95
+    GEMINI_TOP_K: int = 40
+    GEMINI_CANDIDATE_COUNT: int = 1
+    GEMINI_STOP_SEQUENCES: List[str] = []
+    GEMINI_PRESENCE_PENALTY: float = 0.0
+    GEMINI_FREQUENCY_PENALTY: float = 0.0
+    GEMINI_SEED: Optional[int] = None
+    GEMINI_THINKING_BUDGET: int = 1024  # For Gemini 2.5 thinking models
+    GEMINI_ENABLE_THINKING: bool = True  # Enable thinking by default for 2.5 models
     
     # Audio Settings
     MAX_AUDIO_SIZE_MB: int = 10
@@ -82,8 +88,8 @@ class Settings(BaseModel):
     AUDIO_SAMPLE_RATE: int = 16000
     
     # Embeddings Settings
-    EMBEDDINGS_MODEL: str = "text-embedding-ada-002"
-    EMBEDDINGS_DIMENSION: int = 1536
+    EMBEDDINGS_MODEL: str = "text-embedding-004"  # Updated to latest Gemini embedding model
+    EMBEDDINGS_DIMENSION: int = 768  # Gemini embeddings dimension
     
     # Conversation Settings
     MAX_CONVERSATION_LENGTH: int = 50
@@ -218,28 +224,46 @@ class Settings(BaseModel):
         """Validate Google Cloud Location"""
         valid_locations = ["us-central1", "us-east1", "us-west1", "europe-west1", "europe-west4", "asia-northeast1"]
         if v and v not in valid_locations:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.warning(f"Unusual GCP location: {v}. Common locations are: {valid_locations}")
         return v
     
-    @validator("OPENAI_TEMPERATURE")
-    def validate_temperature(cls, v):
-        """Validate OpenAI temperature range"""
+    @validator("GEMINI_TEMPERATURE")
+    def validate_gemini_temperature(cls, v):
+        """Validate Gemini temperature range"""
         if not 0.0 <= v <= 2.0:
-            raise ValueError("OPENAI_TEMPERATURE must be between 0.0 and 2.0")
+            raise ValueError("GEMINI_TEMPERATURE must be between 0.0 and 2.0")
         return v
     
-    @validator("OPENAI_TOP_P")
-    def validate_top_p(cls, v):
-        """Validate OpenAI top_p range"""
+    @validator("GEMINI_TOP_P")
+    def validate_gemini_top_p(cls, v):
+        """Validate Gemini top_p range"""
         if not 0.0 <= v <= 1.0:
-            raise ValueError("OPENAI_TOP_P must be between 0.0 and 1.0")
+            raise ValueError("GEMINI_TOP_P must be between 0.0 and 1.0")
         return v
     
-    @validator("OPENAI_FREQUENCY_PENALTY", "OPENAI_PRESENCE_PENALTY")
-    def validate_penalties(cls, v):
-        """Validate OpenAI penalty range"""
+    @validator("GEMINI_TOP_K")
+    def validate_gemini_top_k(cls, v):
+        """Validate Gemini top_k range"""
+        if v < 1:
+            raise ValueError("GEMINI_TOP_K must be at least 1")
+        return v
+    
+    @validator("GEMINI_PRESENCE_PENALTY", "GEMINI_FREQUENCY_PENALTY")
+    def validate_gemini_penalties(cls, v):
+        """Validate Gemini penalty range"""
         if not -2.0 <= v <= 2.0:
-            raise ValueError("OpenAI penalties must be between -2.0 and 2.0")
+            raise ValueError("Gemini penalties must be between -2.0 and 2.0")
+        return v
+    
+    @validator("GEMINI_THINKING_BUDGET")
+    def validate_thinking_budget(cls, v):
+        """Validate Gemini thinking budget"""
+        if v < 0:
+            raise ValueError("GEMINI_THINKING_BUDGET must be non-negative")
+        if v > 32768:  # Max thinking budget
+            raise ValueError("GEMINI_THINKING_BUDGET cannot exceed 32768")
         return v
     
     @validator("MAX_FILE_SIZE")
@@ -291,10 +315,6 @@ class Settings(BaseModel):
         if self.is_testing and self.TEST_DATABASE_URL:
             return self.TEST_DATABASE_URL
         return self.DATABASE_URL
-    
-    def get_openai_api_key(self) -> str:
-        """Get OpenAI API key as string"""
-        return self.OPENAI_API_KEY.get_secret_value()
     
     def get_gemini_api_key(self) -> Optional[str]:
         """Get Gemini API key as string"""

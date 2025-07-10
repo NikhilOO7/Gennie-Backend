@@ -117,6 +117,8 @@ const AuthContext = React.createContext();
 const App = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
 
   // Add state for voice recording
   const [isRecording, setIsRecording] = useState(false);
@@ -450,6 +452,7 @@ const Dashboard = () => {
   const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
   const [showSettings, setShowSettings] = useState(false);
   const { user, setUser } = React.useContext(AuthContext);
+  const [messages, setMessages] = useState([]);
 
   useEffect(() => {
     fetchChats();
@@ -464,6 +467,50 @@ const Dashboard = () => {
     }
     localStorage.setItem('darkMode', darkMode);
   }, [darkMode]);
+
+  const sendVoiceMessage = async (audioBlob) => {
+    if (!activeChat) return;
+    
+    try {
+      const formData = new FormData();
+      formData.append('chat_id', activeChat.id);
+      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('language', 'en-US');
+      
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`${API_BASE_URL}/voice/transcribe`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Add transcribed message to chat
+        setMessages(prev => [
+          ...prev,
+          {
+            id: Date.now(),
+            content: data.transcription,
+            sender_type: 'user',
+            created_at: new Date().toISOString(),
+            is_voice: true
+          },
+          {
+            id: data.message_id || Date.now() + 1,
+            content: data.response,
+            sender_type: 'assistant',
+            created_at: data.timestamp || new Date().toISOString(),
+            emotion_detected: data.emotion_analysis?.primary_emotion,
+            tokens_used: data.token_usage?.total_tokens
+          }
+        ]);
+      }
+    } catch (error) {
+      console.error('Voice message failed:', error);
+    }
+  };
 
   const fetchChats = async () => {
     try {

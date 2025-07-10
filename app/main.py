@@ -40,7 +40,7 @@ app_info = {
     "description": """
     A production-ready AI-powered conversational backend with:
     - Real-time chat capabilities via WebSocket
-    - OpenAI integration for intelligent responses
+    - Gemini integration for intelligent responses
     - Emotion detection and sentiment analysis
     - User personalization and preference learning
     - Comprehensive authentication and authorization
@@ -95,11 +95,11 @@ async def lifespan(app: FastAPI):
         startup_tasks.append("Service initialization")
         from app.services import gemini_service, emotion_service, personalization_service
         
-        # Test OpenAI connection
+        # Test GeminiAI connection
         if await gemini_service.health_check():
-            logger.info("✅ OpenAI service initialized")
+            logger.info("✅ Gemini service initialized")
         else:
-            logger.warning("⚠️ OpenAI service connection issues")
+            logger.warning("⚠️ Gemini service connection issues")
         
         # Initialize emotion service
         if await emotion_service.health_check():
@@ -145,7 +145,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
     redoc_url="/redoc" if settings.ENVIRONMENT != "production" else None,
-    openapi_url="/openapi.json" if settings.ENVIRONMENT != "production" else None,
+    gemini_url="/gemini.json" if settings.ENVIRONMENT != "production" else None,
 )
 
 # Configure CORS

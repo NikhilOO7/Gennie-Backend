@@ -80,636 +80,451 @@ class PersonalizationService:
                 preferences, len(interaction_history)
             )
             
-            # Cache preferences if Redis is available
+            # Cache preferences if Redis available
             if redis_client:
                 await self._cache_preferences(user_id, preferences, redis_client)
             
             return {
                 "success": True,
-                "user_id": user_id,
                 "preferences": preferences,
                 "interaction_count": len(interaction_history),
-                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-                "next_update_threshold": len(interaction_history) + 10
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
-        
+            
         except Exception as e:
-            logger.error(f"Preference analysis failed for user {user_id}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "user_id": user_id,
-                "fallback_preferences": self._get_default_preferences(user_id)
-            }
+            logger.error(f"Failed to analyze user preferences: {str(e)}", exc_info=True)
+            return self._get_default_preferences(user_id)
     
-    async def _analyze_conversation_style(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze user's conversation style preferences"""
-        
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        if not user_messages:
-            return {"style": "balanced", "confidence": 0.0}
-        
-        # Analyze message characteristics
-        message_lengths = [len(msg.get("content", "")) for msg in user_messages]
-        question_count = sum(1 for msg in user_messages if "?" in msg.get("content", ""))
-        exclamation_count = sum(1 for msg in user_messages if "!" in msg.get("content", ""))
-        
-        avg_length = sum(message_lengths) / len(message_lengths)
-        question_ratio = question_count / len(user_messages)
-        exclamation_ratio = exclamation_count / len(user_messages)
-        
-        # Determine style
-        if avg_length > 200 and question_ratio > 0.3:
-            style = "analytical"
-        elif exclamation_ratio > 0.2 and avg_length < 100:
-            style = "casual"
-        elif question_ratio > 0.4:
-            style = "inquisitive"
-        elif avg_length > 150:
-            style = "detailed"
-        else:
-            style = "balanced"
-        
-        confidence = min(len(user_messages) / 20.0, 1.0)  # Higher confidence with more messages
-        
+    def _get_default_preferences(self, user_id: int) -> Dict[str, Any]:
+        """Get default preferences for a user"""
         return {
-            "style": style,
-            "confidence": confidence,
-            "avg_message_length": avg_length,
-            "question_ratio": question_ratio,
-            "exclamation_ratio": exclamation_ratio,
-            "characteristics": {
-                "verbose": avg_length > 200,
-                "concise": avg_length < 50,
-                "inquisitive": question_ratio > 0.3,
-                "expressive": exclamation_ratio > 0.2
-            }
+            "success": True,
+            "preferences": {
+                "conversation_style": "balanced",
+                "response_length": "medium",
+                "technical_level": "intermediate",
+                "formality": "casual_professional",
+                "creativity": "moderate",
+                "topics": {},
+                "temporal_patterns": {},
+                "confidence_scores": {
+                    "overall": 0.0
+                }
+            },
+            "interaction_count": 0,
+            "using_defaults": True,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
     
-    async def _analyze_response_length_preference(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze preferred response length"""
-        
-        # Look at user feedback patterns and follow-up questions
-        ai_messages = [msg for msg in history if msg.get("sender_type") == "assistant"]
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        if len(ai_messages) < 2:
-            return {"preference": "medium", "confidence": 0.0}
-        
-        # Analyze AI response lengths and user follow-ups
-        response_lengths = [len(msg.get("content", "")) for msg in ai_messages]
-        avg_ai_response_length = sum(response_lengths) / len(response_lengths)
-        
-        # Look for patterns in user follow-ups
-        follow_up_patterns = []
-        for i in range(len(ai_messages) - 1):
-            ai_msg_length = len(ai_messages[i].get("content", ""))
-            # Find next user message
-            next_user_msgs = [
-                msg for msg in user_messages 
-                if msg.get("timestamp", 0) > ai_messages[i].get("timestamp", 0)
-            ]
+    async def _analyze_conversation_style(self, history: List[Dict[str, Any]]) -> str:
+        """Analyze user's preferred conversation style"""
+        try:
+            styles = {
+                "analytical": 0,
+                "emotional": 0,
+                "practical": 0,
+                "creative": 0,
+                "balanced": 0
+            }
             
-            if next_user_msgs:
-                next_user_msg = next_user_msgs[0]
-                content = next_user_msg.get("content", "").lower()
+            for interaction in history:
+                user_content = interaction.get("content", "").lower()
                 
-                # Check for length-related feedback
-                if any(phrase in content for phrase in ["too long", "shorter", "brief", "tl;dr"]):
-                    follow_up_patterns.append(("shorter", ai_msg_length))
-                elif any(phrase in content for phrase in ["more detail", "elaborate", "explain more"]):
-                    follow_up_patterns.append(("longer", ai_msg_length))
-                else:
-                    follow_up_patterns.append(("neutral", ai_msg_length))
-        
-        # Determine preference
-        if not follow_up_patterns:
-            if avg_ai_response_length > 500:
-                preference = "long"
-            elif avg_ai_response_length < 200:
-                preference = "short"
-            else:
-                preference = "medium"
-        else:
-            shorter_requests = [p for p in follow_up_patterns if p[0] == "shorter"]
-            longer_requests = [p for p in follow_up_patterns if p[0] == "longer"]
+                # Analytical keywords
+                if any(word in user_content for word in ["analyze", "explain", "why", "how", "data", "evidence"]):
+                    styles["analytical"] += 1
+                
+                # Emotional keywords
+                if any(word in user_content for word in ["feel", "emotion", "happy", "sad", "worry", "love"]):
+                    styles["emotional"] += 1
+                
+                # Practical keywords
+                if any(word in user_content for word in ["do", "make", "build", "fix", "solve", "implement"]):
+                    styles["practical"] += 1
+                
+                # Creative keywords
+                if any(word in user_content for word in ["imagine", "create", "design", "idea", "innovate"]):
+                    styles["creative"] += 1
             
-            if len(shorter_requests) > len(longer_requests):
-                preference = "short"
-            elif len(longer_requests) > len(shorter_requests):
-                preference = "long"
+            # If no clear preference, default to balanced
+            max_style = max(styles, key=styles.get)
+            if styles[max_style] < len(history) * 0.2:
+                return "balanced"
+            
+            return max_style
+            
+        except Exception as e:
+            logger.error(f"Error analyzing conversation style: {str(e)}")
+            return "balanced"
+    
+    async def _analyze_response_length_preference(self, history: List[Dict[str, Any]]) -> str:
+        """Analyze user's preference for response length"""
+        try:
+            user_lengths = []
+            
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    content = interaction.get("content", "")
+                    user_lengths.append(len(content.split()))
+            
+            if not user_lengths:
+                return "medium"
+            
+            avg_length = sum(user_lengths) / len(user_lengths)
+            
+            if avg_length < 20:
+                return "short"
+            elif avg_length < 50:
+                return "medium"
             else:
-                preference = "medium"
-        
-        confidence = min(len(follow_up_patterns) / 10.0, 1.0)
-        
-        return {
-            "preference": preference,
-            "confidence": confidence,
-            "avg_ai_response_length": avg_ai_response_length,
-            "feedback_patterns": len(follow_up_patterns),
-            "length_feedback": {
-                "shorter_requests": len([p for p in follow_up_patterns if p[0] == "shorter"]),
-                "longer_requests": len([p for p in follow_up_patterns if p[0] == "longer"])
+                return "long"
+                
+        except Exception as e:
+            logger.error(f"Error analyzing response length: {str(e)}")
+            return "medium"
+    
+    async def _analyze_technical_level(self, history: List[Dict[str, Any]]) -> str:
+        """Analyze user's technical level based on vocabulary"""
+        try:
+            technical_terms = 0
+            total_messages = 0
+            
+            technical_keywords = {
+                "basic": ["app", "click", "button", "screen", "email"],
+                "intermediate": ["api", "database", "function", "variable", "server"],
+                "advanced": ["algorithm", "optimization", "architecture", "framework", "microservice"]
             }
-        }
-    
-    async def _analyze_technical_level(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze user's technical sophistication level"""
-        
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        if not user_messages:
-            return {"level": "beginner", "confidence": 0.0}
-        
-        technical_indicators = {
-            "beginner": [
-                "what is", "how do i", "explain", "simple", "basic", "help me understand",
-                "i don't know", "confused", "new to this"
-            ],
-            "intermediate": [
-                "configure", "setup", "install", "implement", "optimize", "troubleshoot",
-                "best practice", "recommend", "compare", "pros and cons"
-            ],
-            "advanced": [
-                "algorithm", "architecture", "performance", "scalability", "optimization",
-                "debug", "refactor", "api", "framework", "deploy", "infrastructure",
-                "security", "authentication", "database", "microservices"
-            ],
-            "expert": [
-                "distributed systems", "machine learning", "artificial intelligence",
-                "containerization", "kubernetes", "devops", "ci/cd", "monitoring",
-                "observability", "load balancing", "caching", "concurrency"
-            ]
-        }
-        
-        level_scores = defaultdict(int)
-        total_indicators = 0
-        
-        for message in user_messages:
-            content = message.get("content", "").lower()
             
-            for level, indicators in technical_indicators.items():
-                for indicator in indicators:
-                    if indicator in content:
-                        level_scores[level] += 1
-                        total_indicators += 1
-        
-        if total_indicators == 0:
-            return {"level": "beginner", "confidence": 0.0}
-        
-        # Calculate weighted scores
-        level_weights = {"beginner": 1, "intermediate": 2, "advanced": 3, "expert": 4}
-        weighted_score = sum(level_scores[level] * level_weights[level] for level in level_scores)
-        avg_score = weighted_score / total_indicators if total_indicators > 0 else 1
-        
-        if avg_score >= 3.5:
-            level = "expert"
-        elif avg_score >= 2.5:
-            level = "advanced"
-        elif avg_score >= 1.5:
-            level = "intermediate"
-        else:
-            level = "beginner"
-        
-        confidence = min(total_indicators / 20.0, 1.0)
-        
-        return {
-            "level": level,
-            "confidence": confidence,
-            "weighted_score": avg_score,
-            "indicator_counts": dict(level_scores),
-            "total_indicators": total_indicators
-        }
-    
-    async def _analyze_formality_preference(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze user's formality preferences"""
-        
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        if not user_messages:
-            return {"level": "neutral", "confidence": 0.0}
-        
-        formal_indicators = [
-            "please", "thank you", "would you", "could you", "i would appreciate",
-            "furthermore", "however", "nevertheless", "therefore", "consequently"
-        ]
-        
-        informal_indicators = [
-            "hey", "hi", "yeah", "yep", "nope", "gonna", "wanna", "kinda", "sorta",
-            "btw", "fyi", "lol", "omg", "wtf", "awesome", "cool", "sweet"
-        ]
-        
-        formal_count = 0
-        informal_count = 0
-        total_words = 0
-        
-        for message in user_messages:
-            content = message.get("content", "").lower()
-            words = content.split()
-            total_words += len(words)
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    content = interaction.get("content", "").lower()
+                    total_messages += 1
+                    
+                    for level, keywords in technical_keywords.items():
+                        if any(keyword in content for keyword in keywords):
+                            technical_terms += list(technical_keywords.keys()).index(level) + 1
             
-            formal_count += sum(1 for indicator in formal_indicators if indicator in content)
-            informal_count += sum(1 for indicator in informal_indicators if indicator in content)
-        
-        if total_words == 0:
-            return {"level": "neutral", "confidence": 0.0}
-        
-        formal_ratio = formal_count / total_words
-        informal_ratio = informal_count / total_words
-        
-        if formal_ratio > informal_ratio * 2:
-            level = "formal"
-        elif informal_ratio > formal_ratio * 2:
-            level = "informal"
-        else:
-            level = "neutral"
-        
-        confidence = min((formal_count + informal_count) / 10.0, 1.0)
-        
-        return {
-            "level": level,
-            "confidence": confidence,
-            "formal_ratio": formal_ratio,
-            "informal_ratio": informal_ratio,
-            "formal_indicators": formal_count,
-            "informal_indicators": informal_count
-        }
+            if total_messages == 0:
+                return "intermediate"
+            
+            avg_technical = technical_terms / total_messages
+            
+            if avg_technical < 1.5:
+                return "basic"
+            elif avg_technical < 2.5:
+                return "intermediate"
+            else:
+                return "advanced"
+                
+        except Exception as e:
+            logger.error(f"Error analyzing technical level: {str(e)}")
+            return "intermediate"
     
-    async def _analyze_creativity_preference(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze user's creativity and originality preferences"""
-        
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        if not user_messages:
-            return {"level": "moderate", "confidence": 0.0}
-        
-        creative_indicators = [
-            "creative", "innovative", "original", "unique", "imaginative", "artistic",
-            "brainstorm", "think outside", "unconventional", "experimental", "novel"
-        ]
-        
-        analytical_indicators = [
-            "analyze", "logical", "systematic", "methodical", "structured", "precise",
-            "accurate", "factual", "evidence", "data", "statistics", "research"
-        ]
-        
-        creative_count = sum(
-            1 for msg in user_messages 
-            for indicator in creative_indicators 
-            if indicator in msg.get("content", "").lower()
-        )
-        
-        analytical_count = sum(
-            1 for msg in user_messages 
-            for indicator in analytical_indicators 
-            if indicator in msg.get("content", "").lower()
-        )
-        
-        if creative_count > analytical_count:
-            level = "high"
-        elif analytical_count > creative_count:
-            level = "low"
-        else:
-            level = "moderate"
-        
-        confidence = min((creative_count + analytical_count) / 15.0, 1.0)
-        
-        return {
-            "level": level,
-            "confidence": confidence,
-            "creative_indicators": creative_count,
-            "analytical_indicators": analytical_count,
-            "preference_ratio": creative_count / max(analytical_count, 1)
-        }
+    async def _analyze_formality_preference(self, history: List[Dict[str, Any]]) -> str:
+        """Analyze user's formality preference"""
+        try:
+            formality_indicators = {
+                "casual": 0,
+                "casual_professional": 0,
+                "formal": 0
+            }
+            
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    content = interaction.get("content", "")
+                    
+                    # Casual indicators
+                    if any(indicator in content.lower() for indicator in ["hey", "yeah", "lol", "btw", "gonna"]):
+                        formality_indicators["casual"] += 1
+                    
+                    # Formal indicators
+                    elif any(indicator in content for indicator in ["Dear", "Sincerely", "Regards", "Please", "Thank you"]):
+                        formality_indicators["formal"] += 1
+                    
+                    # Default to casual professional
+                    else:
+                        formality_indicators["casual_professional"] += 1
+            
+            return max(formality_indicators, key=formality_indicators.get)
+            
+        except Exception as e:
+            logger.error(f"Error analyzing formality: {str(e)}")
+            return "casual_professional"
     
-    async def _analyze_topic_interests(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _analyze_creativity_preference(self, history: List[Dict[str, Any]]) -> str:
+        """Analyze user's preference for creative responses"""
+        try:
+            creative_requests = 0
+            total_messages = 0
+            
+            creative_keywords = ["imagine", "create", "story", "poem", "idea", "brainstorm", "creative", "unique"]
+            
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    content = interaction.get("content", "").lower()
+                    total_messages += 1
+                    
+                    if any(keyword in content for keyword in creative_keywords):
+                        creative_requests += 1
+            
+            if total_messages == 0:
+                return "moderate"
+            
+            creative_ratio = creative_requests / total_messages
+            
+            if creative_ratio < 0.1:
+                return "low"
+            elif creative_ratio < 0.3:
+                return "moderate"
+            else:
+                return "high"
+                
+        except Exception as e:
+            logger.error(f"Error analyzing creativity preference: {str(e)}")
+            return "moderate"
+    
+    async def _analyze_topic_interests(self, history: List[Dict[str, Any]]) -> Dict[str, float]:
         """Analyze user's topic interests"""
-        
-        user_messages = [msg for msg in history if msg.get("sender_type") == "user"]
-        
-        topic_keywords = {
-            "technology": ["tech", "software", "programming", "computer", "ai", "ml", "data", "api"],
-            "business": ["business", "marketing", "strategy", "finance", "startup", "entrepreneur"],
-            "science": ["science", "research", "study", "experiment", "theory", "analysis"],
-            "health": ["health", "fitness", "wellness", "medical", "nutrition", "exercise"],
-            "education": ["learn", "study", "education", "course", "training", "skill"],
-            "creativity": ["art", "design", "creative", "music", "writing", "photography"],
-            "lifestyle": ["travel", "food", "cooking", "hobby", "entertainment", "movies"]
-        }
-        
-        topic_scores = defaultdict(int)
-        total_mentions = 0
-        
-        for message in user_messages:
-            content = message.get("content", "").lower()
+        try:
+            topic_counter = Counter()
             
-            for topic, keywords in topic_keywords.items():
-                for keyword in keywords:
-                    if keyword in content:
-                        topic_scores[topic] += 1
-                        total_mentions += 1
-        
-        if total_mentions == 0:
-            return {"interests": {}, "confidence": 0.0}
-        
-        # Normalize scores
-        normalized_scores = {
-            topic: score / total_mentions 
-            for topic, score in topic_scores.items()
-        }
-        
-        # Get top interests
-        top_interests = sorted(
-            normalized_scores.items(), 
-            key=lambda x: x[1], 
-            reverse=True
-        )[:5]
-        
-        confidence = min(total_mentions / 30.0, 1.0)
-        
-        return {
-            "interests": dict(top_interests),
-            "confidence": confidence,
-            "total_mentions": total_mentions,
-            "topic_distribution": dict(normalized_scores)
-        }
+            topic_keywords = {
+                "technology": ["tech", "software", "hardware", "computer", "ai", "code"],
+                "business": ["business", "market", "finance", "startup", "company", "strategy"],
+                "health": ["health", "wellness", "fitness", "medical", "doctor", "exercise"],
+                "education": ["learn", "study", "course", "education", "teach", "school"],
+                "entertainment": ["movie", "music", "game", "book", "show", "entertainment"],
+                "science": ["science", "research", "experiment", "theory", "discovery", "study"],
+                "travel": ["travel", "trip", "vacation", "destination", "flight", "hotel"],
+                "food": ["food", "recipe", "cook", "restaurant", "meal", "cuisine"]
+            }
+            
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    content = interaction.get("content", "").lower()
+                    
+                    for topic, keywords in topic_keywords.items():
+                        if any(keyword in content for keyword in keywords):
+                            topic_counter[topic] += 1
+            
+            # Normalize scores
+            total = sum(topic_counter.values())
+            if total > 0:
+                return {topic: count/total for topic, count in topic_counter.items()}
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error analyzing topics: {str(e)}")
+            return {}
     
     async def _analyze_temporal_patterns(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze user's temporal usage patterns"""
-        
-        timestamps = []
-        for msg in history:
-            if msg.get("timestamp"):
-                try:
-                    if isinstance(msg["timestamp"], str):
-                        ts = datetime.fromisoformat(msg["timestamp"].replace("Z", "+00:00"))
-                    else:
-                        ts = msg["timestamp"]
-                    timestamps.append(ts)
-                except:
-                    continue
-        
-        if len(timestamps) < 5:
-            return {"patterns": {}, "confidence": 0.0}
-        
-        # Analyze hourly patterns
-        hours = [ts.hour for ts in timestamps]
-        hour_counts = Counter(hours)
-        
-        # Analyze daily patterns
-        days = [ts.weekday() for ts in timestamps]  # 0=Monday, 6=Sunday
-        day_counts = Counter(days)
-        
-        # Find peak activity times
-        peak_hour = max(hour_counts, key=hour_counts.get)
-        peak_day = max(day_counts, key=day_counts.get)
-        
-        # Classify time preferences
-        if peak_hour < 6:
-            time_preference = "night_owl"
-        elif peak_hour < 12:
-            time_preference = "morning_person"
-        elif peak_hour < 18:
-            time_preference = "afternoon_active"
-        else:
-            time_preference = "evening_active"
-        
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        
-        confidence = min(len(timestamps) / 50.0, 1.0)
-        
-        return {
-            "patterns": {
-                "peak_hour": peak_hour,
-                "peak_day": day_names[peak_day],
-                "time_preference": time_preference,
-                "hourly_distribution": dict(hour_counts),
-                "daily_distribution": dict(day_counts)
-            },
-            "confidence": confidence,
-            "total_interactions": len(timestamps)
-        }
-    
-    def _calculate_preference_confidence(
-        self, 
-        preferences: Dict[str, Any], 
-        interaction_count: int
-    ) -> Dict[str, float]:
-        """Calculate confidence scores for all preferences"""
-        
-        base_confidence = min(interaction_count / 50.0, 1.0)
-        
-        confidence_scores = {}
-        for pref_type, pref_data in preferences.items():
-            if isinstance(pref_data, dict) and "confidence" in pref_data:
-                # Combine individual confidence with base confidence
-                individual_confidence = pref_data["confidence"]
-                combined_confidence = (individual_confidence + base_confidence) / 2
-                confidence_scores[pref_type] = combined_confidence
-            else:
-                confidence_scores[pref_type] = base_confidence * 0.5
-        
-        return confidence_scores
-    
-    async def _cache_preferences(
-        self, 
-        user_id: int, 
-        preferences: Dict[str, Any], 
-        redis_client
-    ) -> None:
-        """Cache preferences in Redis"""
+        """Analyze temporal patterns in user interactions"""
         try:
-            cache_key = f"user_preferences:{user_id}"
-            cache_data = {
-                "preferences": preferences,
-                "cached_at": datetime.now(timezone.utc).isoformat(),
-                "ttl": settings.PERSONALIZATION_CACHE_TTL
+            hour_counter = defaultdict(int)
+            day_counter = defaultdict(int)
+            
+            for interaction in history:
+                if interaction.get("sender_type") == "user":
+                    timestamp_str = interaction.get("timestamp", "")
+                    if timestamp_str:
+                        try:
+                            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            hour_counter[timestamp.hour] += 1
+                            day_counter[timestamp.weekday()] += 1
+                        except:
+                            continue
+            
+            return {
+                "preferred_hours": dict(hour_counter),
+                "preferred_days": dict(day_counter),
+                "most_active_hour": max(hour_counter, key=hour_counter.get) if hour_counter else None,
+                "most_active_day": max(day_counter, key=day_counter.get) if day_counter else None
             }
             
-            await redis_client.setex(
-                cache_key, 
-                settings.PERSONALIZATION_CACHE_TTL, 
-                json.dumps(cache_data, default=str)
-            )
-            
-            logger.debug(f"Cached preferences for user {user_id}")
-        
         except Exception as e:
-            logger.error(f"Failed to cache preferences for user {user_id}: {str(e)}")
+            logger.error(f"Error analyzing temporal patterns: {str(e)}")
+            return {}
     
-    async def get_cached_preferences(
-        self, 
-        user_id: int, 
-        redis_client
-    ) -> Optional[Dict[str, Any]]:
+    def _calculate_preference_confidence(self, preferences: Dict[str, Any], interaction_count: int) -> Dict[str, float]:
+        """Calculate confidence scores for preferences"""
+        try:
+            # Base confidence on interaction count
+            base_confidence = min(interaction_count / 50, 1.0)  # Max confidence at 50 interactions
+            
+            confidence_scores = {}
+            
+            for key, weight in self.preference_weights.items():
+                if key in preferences and preferences[key]:
+                    confidence_scores[key] = base_confidence * weight
+                else:
+                    confidence_scores[key] = 0.0
+            
+            confidence_scores["overall"] = sum(confidence_scores.values())
+            
+            return confidence_scores
+            
+        except Exception as e:
+            logger.error(f"Error calculating confidence: {str(e)}")
+            return {"overall": 0.0}
+    
+    async def _cache_preferences(self, user_id: int, preferences: Dict[str, Any], redis_client) -> None:
+        """Cache user preferences in Redis"""
+        try:
+            cache_key = f"user_preferences:{user_id}"
+            await redis_client.setex(
+                cache_key,
+                settings.PERSONALIZATION_CACHE_TTL,
+                json.dumps(preferences, default=str)
+            )
+        except Exception as e:
+            logger.error(f"Failed to cache preferences: {str(e)}")
+    
+    async def get_cached_preferences(self, user_id: int, redis_client) -> Optional[Dict[str, Any]]:
         """Get cached preferences from Redis"""
         try:
             cache_key = f"user_preferences:{user_id}"
             cached_data = await redis_client.get(cache_key)
             
             if cached_data:
-                data = json.loads(cached_data)
-                return data.get("preferences")
-        
+                return json.loads(cached_data)
+            return None
+            
         except Exception as e:
-            logger.error(f"Failed to get cached preferences for user {user_id}: {str(e)}")
-        
-        return None
+            logger.error(f"Failed to get cached preferences: {str(e)}")
+            return None
     
-    def _get_default_preferences(self, user_id: int) -> Dict[str, Any]:
-        """Get default preferences for new users"""
-        return {
-            "conversation_style": {"style": "balanced", "confidence": 0.0},
-            "response_length": {"preference": "medium", "confidence": 0.0},
-            "technical_level": {"level": "beginner", "confidence": 0.0},
-            "formality": {"level": "neutral", "confidence": 0.0},
-            "creativity": {"level": "moderate", "confidence": 0.0},
-            "topics": {"interests": {}, "confidence": 0.0},
-            "temporal_patterns": {"patterns": {}, "confidence": 0.0}
-        }
-    
-    async def generate_personalized_system_prompt(
-        self, 
-        user_preferences: Dict[str, Any], 
+    async def generate_personalized_prompt(
+        self,
+        user_id: int,
+        base_prompt: str,
+        preferences: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Generate personalized system prompt based on user preferences"""
-        
-        base_prompt = "You are a helpful AI assistant. "
-        
-        # Check if preferences are in simple format or complex format
-        is_simple_format = isinstance(user_preferences.get("conversation_style"), str)
-        
-        if is_simple_format:
-            # Handle simple format (from database)
+        try:
+            if not preferences or preferences.get("using_defaults"):
+                return base_prompt
             
-            # Conversation style
-            style = user_preferences.get("conversation_style", "friendly")
-            if style == "friendly":
-                base_prompt += "Be warm, approachable, and conversational in your responses. "
-            elif style == "formal":
-                base_prompt += "Maintain a professional and formal tone in your responses. "
-            elif style == "casual":
-                base_prompt += "Keep your responses relaxed and casual, like talking to a friend. "
-            elif style == "professional":
-                base_prompt += "Provide expert-level, professional responses with clarity and precision. "
+            personalized_prompt = base_prompt
+            prefs = preferences.get("preferences", {})
             
-            # Response length - CRITICAL FOR SHORT RESPONSES
-            length = user_preferences.get("preferred_response_length", "medium")
+            # Adjust for conversation style
+            style = prefs.get("conversation_style", "balanced")
+            if style == "analytical":
+                personalized_prompt += " Provide detailed analysis and logical explanations."
+            elif style == "emotional":
+                personalized_prompt += " Be empathetic and acknowledge feelings."
+            elif style == "practical":
+                personalized_prompt += " Focus on actionable advice and practical solutions."
+            elif style == "creative":
+                personalized_prompt += " Be creative and imaginative in your responses."
+            
+            # Adjust for response length
+            length = prefs.get("response_length", "medium")
             if length == "short":
-                base_prompt += "CRITICAL: Keep ALL responses extremely brief - maximum 2-3 sentences total. Never use numbered lists, bullet points, or multiple paragraphs. Give one direct, concise answer. Do not provide multiple suggestions or steps. "
-            elif length == "medium":
-                base_prompt += "Provide balanced responses with appropriate detail. "
+                personalized_prompt += " Keep responses concise and to the point."
             elif length == "long":
-                base_prompt += "Provide detailed, comprehensive responses with examples, multiple perspectives, and thorough explanations. "
+                personalized_prompt += " Provide comprehensive and detailed responses."
             
-            # Emotional support level
-            support = user_preferences.get("emotional_support_level", "standard")
-            if support == "high":
-                base_prompt += "Show extra empathy and emotional support in your responses. Be very understanding and caring. "
-            elif support == "minimal":
-                base_prompt += "Focus on factual information with minimal emotional content. "
+            # Adjust for technical level
+            tech_level = prefs.get("technical_level", "intermediate")
+            if tech_level == "basic":
+                personalized_prompt += " Use simple language and avoid technical jargon."
+            elif tech_level == "advanced":
+                personalized_prompt += " Feel free to use technical terminology and advanced concepts."
             
-            # Technical level
-            tech_level = user_preferences.get("technical_level", "intermediate")
-            if tech_level == "beginner":
-                base_prompt += "Explain things in simple terms, avoiding jargon. "
-            elif tech_level == "expert":
-                base_prompt += "You can use technical terminology and assume advanced knowledge. "
+            # Adjust for formality
+            formality = prefs.get("formality", "casual_professional")
+            if formality == "casual":
+                personalized_prompt += " Use a casual, friendly tone."
+            elif formality == "formal":
+                personalized_prompt += " Maintain a formal, professional tone."
             
-            # Humor level
-            humor = user_preferences.get("humor_level", "moderate")
-            if humor == "high":
-                base_prompt += "Feel free to use humor and be playful when appropriate. "
-            elif humor == "none":
-                base_prompt += "Maintain a serious tone without humor. "
-                
-        else:
-            # Handle complex format (from personalization analysis)
+            # Adjust for creativity
+            creativity = prefs.get("creativity", "moderate")
+            if creativity == "high":
+                personalized_prompt += " Be creative and think outside the box."
+            elif creativity == "low":
+                personalized_prompt += " Stick to conventional approaches."
             
-            # Conversation style
-            conv_style = user_preferences.get("conversation_style", {})
-            style = conv_style.get("style", "balanced")
-            confidence = conv_style.get("confidence", 0.0)
+            # Add topic interests if significant
+            topics = prefs.get("topics", {})
+            if topics:
+                top_topics = sorted(topics.items(), key=lambda x: x[1], reverse=True)[:3]
+                if top_topics and top_topics[0][1] > 0.2:  # If top topic > 20%
+                    topic_names = [t[0] for t in top_topics]
+                    personalized_prompt += f" The user is particularly interested in: {', '.join(topic_names)}."
             
-            if confidence > 0.5:  # Only apply strong preferences
-                if style == "casual":
-                    base_prompt += "Keep your responses conversational and friendly. Use casual language and feel free to use appropriate humor. "
-                elif style == "analytical":
-                    base_prompt += "Provide detailed, analytical responses with logical reasoning. Break down complex topics systematically. "
-                elif style == "supportive":
-                    base_prompt += "Be especially warm, understanding, and supportive in your responses. "
+            return personalized_prompt
             
-            # Response length preference - CRITICAL FOR SHORT RESPONSES
-            length_pref = user_preferences.get("response_length", {})
-            length = length_pref.get("preference", "medium")
-            length_confidence = length_pref.get("confidence", 0.0)
-            
-            if length == "short":  # Apply regardless of confidence for short
-                base_prompt += "CRITICAL: Keep ALL responses extremely brief - maximum 2-3 sentences total. Never use numbered lists, bullet points, or multiple paragraphs. Give one direct, concise answer. Do not provide multiple suggestions or steps. "
-            elif length_confidence > 0.5:
-                if length == "long":
-                    base_prompt += "Provide comprehensive, detailed responses. "
-            
-            # Technical level
-            tech_pref = user_preferences.get("technical_level", {})
-            tech_level = tech_pref.get("level", "intermediate")
-            tech_confidence = tech_pref.get("confidence", 0.0)
-            
-            if tech_confidence > 0.5:
-                if tech_level == "beginner":
-                    base_prompt += "Explain concepts in simple, easy-to-understand terms. Avoid technical jargon. "
-                elif tech_level == "expert":
-                    base_prompt += "You can use advanced technical terminology and assume deep knowledge of the subject. "
-            
-            # Formality preference
-            formality = user_preferences.get("formality", {})
-            formality_level = formality.get("level", "neutral")
-            formality_confidence = formality.get("confidence", 0.0)
-            
-            if formality_confidence > 0.5:
-                if formality_level in ["very_casual", "casual"]:
-                    base_prompt += "Use informal, relaxed language. "
-                elif formality_level in ["formal", "very_formal"]:
-                    base_prompt += "Maintain a formal, professional tone. "
-            
-            # Creativity preference
-            creativity = user_preferences.get("creativity", {})
-            creativity_level = creativity.get("level", "moderate")
-            creativity_confidence = creativity.get("confidence", 0.0)
-            
-            if creativity_confidence > 0.5:
-                if creativity_level == "low":
-                    base_prompt += "Stick to facts and conventional approaches. "
-                elif creativity_level == "high":
-                    base_prompt += "Be creative and think outside the box in your responses. "
-            
-            # Topic interests
-            topics = user_preferences.get("topics", {})
-            interests = topics.get("interests", {})
-            
-            if interests:
-                top_interests = sorted(interests.items(), key=lambda x: x[1], reverse=True)[:3]
-                if top_interests:
-                    interest_names = [interest[0] for interest in top_interests if interest[1] > 0.3]
-                    if interest_names:
-                        base_prompt += f"The user is particularly interested in: {', '.join(interest_names)}. "
+        except Exception as e:
+            logger.error(f"Error generating personalized prompt: {str(e)}")
+            return base_prompt
+    
+    def adapt_system_prompt(
+        self,
+        base_prompt: str,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        emotion: Optional[str] = None
+    ) -> str:
+        """
+        Adapt system prompt based on user preferences and context
         
-        # Add emotion context if available (works for both formats)
-        if context and context.get("emotion"):
-            emotion = context["emotion"]
+        Args:
+            base_prompt: Base system prompt
+            user_preferences: User preference data
+            context: Additional context (like RAG results)
+            emotion: Current detected emotion
+            
+        Returns:
+            Adapted system prompt
+        """
+        # If personalization is disabled, return base prompt
+        if not settings.PERSONALIZATION_ENABLED:
+            return base_prompt
+        
+        # Start with base prompt
+        adapted_prompt = base_prompt
+        
+        # Add preference-based adaptations
+        if user_preferences and not user_preferences.get("using_defaults"):
+            prefs = user_preferences.get("preferences", {})
+            
+            # Response style adaptations
+            style = prefs.get("conversation_style", "balanced")
+            length = prefs.get("response_length", "medium")
+            
+            style_adaptations = {
+                "analytical": "Focus on data, logic, and detailed analysis. ",
+                "emotional": "Be empathetic and emotionally aware. ",
+                "practical": "Provide actionable, practical advice. ",
+                "creative": "Be creative and imaginative. ",
+                "balanced": ""
+            }
+            
+            length_adaptations = {
+                "short": "Keep responses brief and concise. ",
+                "medium": "",
+                "long": "Provide comprehensive, detailed responses. "
+            }
+            
+            adapted_prompt += style_adaptations.get(style, "")
+            adapted_prompt += length_adaptations.get(length, "")
+        
+        # Add emotion-based adaptations
+        if emotion:
             if emotion in ["sadness", "fear", "anger"]:
-                base_prompt += "The user may be experiencing difficult emotions. Be extra empathetic and supportive. "
+                adapted_prompt += "The user appears to be experiencing negative emotions. Be extra empathetic and supportive. "
             elif emotion in ["joy", "excitement"]:
-                base_prompt += "The user seems to be in a positive mood. Match their energy appropriately. "
+                adapted_prompt += "The user seems to be in a positive mood. Match their energy appropriately. "
         
         # Add RAG context awareness (works for both formats)
         if context and context.get("rag_context"):
-            base_prompt += "You have access to relevant context from previous conversations. Use this context to provide more personalized and informed responses. "
+            adapted_prompt += "You have access to relevant context from previous conversations. Use this context to provide more personalized and informed responses. "
         
-        return base_prompt
+        return adapted_prompt
     
     async def update_user_interaction(
         self, 
@@ -750,6 +565,11 @@ class PersonalizationService:
     
     async def health_check(self) -> bool:
         """Check if personalization service is healthy"""
+        # If personalization is disabled, it's considered "healthy" but inactive
+        if not settings.PERSONALIZATION_ENABLED:
+            logger.info("Personalization service is disabled by settings, health check returning True.")
+            return True
+
         try:
             # Test basic functionality
             test_history = [

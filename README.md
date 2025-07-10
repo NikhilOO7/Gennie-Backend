@@ -1,19 +1,19 @@
 # 🤖 AI Chatbot Backend
 
-> A production-ready, feature-rich AI-powered conversational backend built with FastAPI, featuring real-time chat capabilities, OpenAI integration, emotion detection, and comprehensive user management.
+> A production-ready, feature-rich AI-powered conversational backend built with FastAPI, featuring real-time chat capabilities, GEMENI integration, emotion detection, and comprehensive user management.
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-00a000?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat&logo=python)](https://python.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791?style=flat&logo=postgresql)](https://postgresql.org)
 [![Redis](https://img.shields.io/badge/Redis-7.0+-dc382d?style=flat&logo=redis)](https://redis.io)
-[![OpenAI](https://img.shields.io/badge/OpenAI-API-412991?style=flat&logo=openai)](https://openai.com)
+[![GEMENI](https://img.shields.io/badge/GEMENI-API-412991?style=flat&logo=openai)](https://openai.com)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://docker.com)
 
 ## ✨ Features
 
 ### 🚀 Core Functionality
 - **High-Performance API** - Built with FastAPI for maximum speed and efficiency
-- **AI-Powered Conversations** - Integrated with OpenAI GPT for intelligent responses  
+- **AI-Powered Conversations** - Integrated with GEMENI GPT for intelligent responses  
 - **Real-time Chat** - WebSocket support for instant messaging
 - **User Management** - Complete authentication and authorization system
 - **Emotion Detection** - AI-powered emotion analysis using VADER and TextBlob
@@ -44,7 +44,7 @@
 - PostgreSQL 15+
 - Redis 7.0+
 - Docker & Docker Compose
-- OpenAI API Key
+- GEMENI API Key
 
 ### Option 1: Automated Setup (Recommended)
 
@@ -124,9 +124,9 @@ DATABASE_URL=postgresql+asyncpg://chatbot_user:your_password@localhost:5432/chat
 # Redis Configuration  
 REDIS_URL=redis://localhost:6379/0
 
-# OpenAI Configuration
-OPENAI_API_KEY=sk-your-openai-api-key-here
-# OPENAI_ORGANIZATION_ID=org-your-org-id  # Optional, only for organization accounts
+# GEMENI Configuration
+GEMINI_API_KEY=sk-your-openai-api-key-here
+# GEMINI_ORGANIZATION_ID=org-your-org-id  # Optional, only for organization accounts
 
 # Security Settings
 JWT_SECRET_KEY=your-jwt-secret-key
@@ -144,7 +144,7 @@ LOG_LEVEL=INFO
 
 ### Required API Keys
 
-1. **OpenAI API Key**: Get from [OpenAI Platform](https://platform.openai.com/account/api-keys)
+1. **GEMENI API Key**: Get from [GEMENI Platform](https://platform.openai.com/account/api-keys)
 2. **Secret Keys**: Generate secure random strings for JWT and app secrets
 
 ## 📚 API Documentation
@@ -291,7 +291,7 @@ ai-chatbot-backend/
 - **Framework**: FastAPI 0.109+ (Python 3.11+)
 - **Database**: PostgreSQL 15+ with SQLAlchemy ORM
 - **Cache**: Redis 7.0+
-- **AI Integration**: OpenAI GPT-3.5/GPT-4
+- **AI Integration**: GEMENI GPT-3.5/GPT-4
 - **Authentication**: JWT with passlib and bcrypt
 - **Real-time**: WebSockets
 - **Migrations**: Alembic
@@ -353,7 +353,7 @@ mypy app/
    SECRET_KEY=your-production-secret-key
    DATABASE_URL=your-production-db-url
    REDIS_URL=your-production-redis-url
-   OPENAI_API_KEY=your-openai-key
+   GEMINI_API_KEY=your-openai-key
    ```
 
 2. **Use production ASGI server**:
@@ -397,7 +397,7 @@ docker-compose ps
 docker-compose logs postgres
 ```
 
-#### 3. OpenAI API Issues
+#### 3. GEMENI API Issues
 - Verify API key in `.env` file
 - Check API key permissions
 - Monitor usage limits
@@ -493,7 +493,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - [FastAPI](https://fastapi.tiangolo.com/) for the amazing web framework
-- [OpenAI](https://openai.com/) for AI capabilities
+- [GEMENI](https://openai.com/) for AI capabilities
 - [SQLAlchemy](https://sqlalchemy.org/) for database ORM
 - [Pydantic](https://pydantic-docs.helpmanual.io/) for data validation
 - [Alembic](https://alembic.sqlalchemy.org/) for database migrations
@@ -502,7 +502,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built with ❤️ using FastAPI and OpenAI**
+**Built with ❤️ using FastAPI and GEMENI**
 
 [⭐ Star this repository](https://github.com/NikhilOO7/Gennie-Backend) if you find it helpful!
 
