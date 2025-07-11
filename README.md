@@ -13,7 +13,7 @@
 
 ### 🚀 Core Functionality
 - **High-Performance API** - Built with FastAPI for maximum speed and efficiency
-- **AI-Powered Conversations** - Integrated with GEMENI GPT for intelligent responses  
+- **AI-Powered Conversations** - Integrated with GEMENI for intelligent responses  
 - **Real-time Chat** - WebSocket support for instant messaging
 - **User Management** - Complete authentication and authorization system
 - **Emotion Detection** - AI-powered emotion analysis using VADER and TextBlob
@@ -291,7 +291,7 @@ ai-chatbot-backend/
 - **Framework**: FastAPI 0.109+ (Python 3.11+)
 - **Database**: PostgreSQL 15+ with SQLAlchemy ORM
 - **Cache**: Redis 7.0+
-- **AI Integration**: GEMENI GPT-3.5/GPT-4
+- **AI Integration**: GEMENI
 - **Authentication**: JWT with passlib and bcrypt
 - **Real-time**: WebSockets
 - **Migrations**: Alembic

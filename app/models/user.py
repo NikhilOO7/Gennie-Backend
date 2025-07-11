@@ -125,7 +125,7 @@ class User(Base):
                 "data_collection_consent": False
             },
             "chat_preferences": {
-                "ai_model": "gpt-3.5-turbo",
+                "ai_model": "gemini-2.0-flash-001",
                 "response_style": "balanced",
                 "max_context_length": 10,
                 "enable_emotion_detection": True,

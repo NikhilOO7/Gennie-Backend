@@ -1,0 +1,157 @@
+// services/api.js
+import { API_BASE_URL } from '../utils/constants';
+import { getErrorMessage } from '../utils/helpers';
+
+class ApiService {
+  constructor() {
+    this.baseURL = API_BASE_URL;
+  }
+
+  getAuthHeaders() {
+    const token = localStorage.getItem('access_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  async request(endpoint, options = {}) {
+    const url = `${this.baseURL}${endpoint}`;
+    const config = {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAuthHeaders(),
+        ...options.headers,
+      },
+    };
+
+    try {
+      const response = await fetch(url, config);
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(getErrorMessage(error));
+      }
+      
+      // Handle empty responses
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return await response.json();
+      }
+      return response;
+    } catch (error) {
+      console.error('API request failed:', error);
+      throw error;
+    }
+  }
+
+  // Auth endpoints
+  async login(credentials) {
+    return this.request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(credentials),
+    });
+  }
+
+  async register(userData) {
+    return this.request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  async getCurrentUser() {
+    return this.request('/users/me');
+  }
+
+  // Chat endpoints
+  async getChats() {
+    return this.request('/chat');
+  }
+
+  async createChat(chatData) {
+    return this.request('/chat', {
+      method: 'POST',
+      body: JSON.stringify(chatData),
+    });
+  }
+
+  async deleteChat(chatId) {
+    return this.request(`/chat/${chatId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getChatMessages(chatId) {
+    return this.request(`/chat/${chatId}/messages`);
+  }
+
+  async sendMessage(message, chatId, options = {}) {
+    return this.request('/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        chat_id: chatId,
+        detect_emotion: true,
+        enable_personalization: true,
+        use_context: true,
+        ...options
+      }),
+    });
+  }
+
+  // Voice endpoints
+  async transcribeAudio(audioBlob, language = 'en-US') {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.wav');
+    formData.append('language_code', language);
+    
+    return this.request('/voice/transcribe', {
+      method: 'POST',
+      headers: {
+        ...this.getAuthHeaders(),
+        // Don't set Content-Type for FormData
+      },
+      body: formData,
+    });
+  }
+
+  async synthesizeSpeech(text, options = {}) {
+    return this.request('/voice/synthesize', {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        return_base64: true,
+        ...options
+      }),
+    });
+  }
+
+  // Additional endpoints
+  async getHealthStatus() {
+    return this.request('/health');
+  }
+
+  async getPersonalization() {
+    return this.request('/ai/personalization');
+  }
+
+  async updatePersonalization(preferences) {
+    return this.request('/ai/personalization', {
+      method: 'PUT',
+      body: JSON.stringify(preferences),
+    });
+  }
+
+  async getRAGContext(messageId) {
+    return this.request(`/ai/rag-context/${messageId}`);
+  }
+
+  async getUserStats() {
+    return this.request('/users/me/stats');
+  }
+
+  async getVoices() {
+    return this.request('/voice/voices');
+  }
+}
+
+export default new ApiService();
