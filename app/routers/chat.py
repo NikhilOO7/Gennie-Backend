@@ -25,7 +25,7 @@ router = APIRouter()
 class ChatCreate(BaseModel):
     title: Optional[str] = "New Chat"
     description: Optional[str] = None
-    ai_model: Optional[str] = "gpt-3.5-turbo"
+    ai_model: Optional[str] = "gemini-2.0-flash-001"
     system_prompt: Optional[str] = None
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1000

@@ -36,6 +36,7 @@ email_validator==2.2.0
 dnspython==2.7.0
 aioredis==2.0.1
 async==timeout-5.0.1
+PyJWT==2.10.1
 
 # Google Gen AI SDK (Latest recommended SDK for Gemini)
 google-genai==1.0.0  # This is the NEW recommended SDK
@@ -68,7 +69,6 @@ redis==5.0.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
-jwt==1.4.0
 
 # Monitoring and utilities
 psutil==5.9.6

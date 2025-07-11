@@ -171,7 +171,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-@router.websocket("/ws/{chat_id}")
+@router.websocket("/chat/{chat_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
     chat_id: int,
@@ -267,8 +267,21 @@ async def get_user_from_token(token: str, db: AsyncSession) -> User:
     """Get user from JWT token"""
     payload = verify_token(token)
     
+    # Get user ID from payload
+    user_id_str = payload.get("sub")
+    
+    if not user_id_str:
+        raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
+    
+    # Convert string ID to integer
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid token: invalid user ID format")
+    
+    # Query with integer user_id
     result = await db.execute(
-        select(User).where(User.id == payload.get("sub"))
+        select(User).where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
     

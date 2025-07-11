@@ -86,7 +86,7 @@ class ChatBase(BaseSchema):
     """Base chat schema"""
     title: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
-    ai_model: str = Field(default="gpt-3.5-turbo", max_length=50)
+    ai_model: str = Field(default="gemini-2.0-flash-001", max_length=50)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1000, ge=1, le=4000)
 

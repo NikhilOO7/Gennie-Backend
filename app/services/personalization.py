@@ -596,6 +596,57 @@ class PersonalizationService:
             "enabled": settings.PERSONALIZATION_ENABLED,
             "cache_ttl": settings.PERSONALIZATION_CACHE_TTL
         }
+    
+    async def generate_personalized_system_prompt(
+    self,
+    user_preferences: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None
+) -> str:
+        """
+        Generate personalized system prompt based on user preferences and context
+        
+        Args:
+            user_preferences: User preference data
+            context: Additional context (emotion, conversation history, etc.)
+            
+        Returns:
+            Personalized system prompt
+        """
+        # Base system prompt
+        base_prompt = "You are a helpful AI assistant."
+        
+        # If no preferences or using defaults, return base prompt
+        if not user_preferences or user_preferences.get("using_defaults"):
+            return base_prompt
+        
+        try:
+            # Use the existing generate_personalized_prompt method with slight modifications
+            personalized_prompt = await self.generate_personalized_prompt(
+                user_id=user_preferences.get("user_id", 0),
+                base_prompt=base_prompt,
+                preferences=user_preferences,
+                context=context
+            )
+            
+            # Add context-specific modifications
+            if context:
+                # Add emotion context
+                emotion = context.get("emotion")
+                if emotion:
+                    if emotion in ["sadness", "fear", "anger"]:
+                        personalized_prompt += " Be especially empathetic and supportive."
+                    elif emotion in ["joy", "excitement"]:
+                        personalized_prompt += " Match the user's positive energy."
+                
+                # Add RAG context awareness
+                if context.get("rag_context"):
+                    personalized_prompt += " You have access to relevant conversation history - use it to provide more contextual responses."
+            
+            return personalized_prompt
+            
+        except Exception as e:
+            logger.error(f"Error generating personalized system prompt: {str(e)}")
+            return base_prompt
 
 # Create global service instance
 personalization_service = PersonalizationService()

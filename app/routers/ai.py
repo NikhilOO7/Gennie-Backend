@@ -449,7 +449,7 @@ async def chat_with_ai(
             chat_id=chat.id,
             content=ai_response,
             message_type=MessageType.TEXT,
-            sender_type=SenderType.AI,
+            sender_type=SenderType.ASSISTANT,
             tokens_used=token_usage.get("total_tokens", 0),
             processing_time=processing_time_ai,
             message_metadata={
@@ -589,7 +589,7 @@ async def _stream_chat_response(
             chat_id=chat.id,
             content=full_response.strip(),
             message_type=MessageType.TEXT,
-            sender_type=SenderType.AI,
+            sender_type=SenderType.ASSISTANT,
             tokens_used=ai_response_data.get("tokens_used", {}).get("total_tokens", 0),
             processing_time=ai_response_data.get("processing_time", 0),
             message_metadata={

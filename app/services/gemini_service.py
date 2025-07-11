@@ -153,7 +153,7 @@ class GeminiService:
             "mode": "Developer API"
         }
     
-    def _convert_messages_to_contents(self, messages: List[Dict[str, str]]) -> List[Content]:
+    def _convert_messages_to_contents(self, messages: List[Dict[str, str]]) -> List[Union[str, Content]]:
         """
         Convert OpenAI-style messages to Gemini contents
         
@@ -161,25 +161,24 @@ class GeminiService:
             messages: List of message dictionaries with 'role' and 'content'
             
         Returns:
-            List of Gemini Content objects
+            List of content strings or Content objects for Gemini
         """
+        # For simple API usage, just pass the message strings directly
+        # The SDK will handle the conversion to proper format
         contents = []
         
         for message in messages:
             role = message.get("role", "user")
             content = message.get("content", "")
             
-            # Map roles
+            # Skip system messages as they're handled separately
             if role == "system":
-                # System messages handled separately in Gemini
                 continue
-            elif role == "assistant":
-                role = "model"
-            else:
-                role = "user"
             
-            # Create content
-            contents.append(Content(parts=[Part.from_text(content)], role=role))
+            # For the simple API, just add the content strings
+            # The SDK will automatically create the proper format
+            if content:
+                contents.append(content)
         
         return contents
     
@@ -226,7 +225,7 @@ class GeminiService:
     
     async def _handle_streaming_response(
         self,
-        contents: List[Content],
+        prompt: str,
         config: GenerateContentConfig,
         model: Optional[str],
         start_time: datetime,
@@ -236,7 +235,7 @@ class GeminiService:
         Handle streaming response from Gemini
         
         Args:
-            contents: Content to generate from
+            prompt: Prompt string to generate from
             config: Generation configuration
             model: Model to use
             start_time: Request start time
@@ -251,7 +250,7 @@ class GeminiService:
             
             async for chunk in self.client.aio.models.generate_content_stream(
                 model=model or self.chat_model,
-                contents=contents,
+                contents=prompt,  # Pass as string
                 config=config,
             ):
                 chunk_count += 1
@@ -322,8 +321,8 @@ class GeminiService:
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Convert messages to Gemini format
-            contents = self._convert_messages_to_contents(messages)
+            # Convert messages to a simple prompt string (like test script)
+            prompt = self._convert_messages_to_contents(messages)
             system_instruction = self._extract_system_instruction(messages)
             
             # Estimate input tokens
@@ -352,13 +351,13 @@ class GeminiService:
             if stream:
                 # Handle streaming response
                 return self._handle_streaming_response(
-                    contents, config, model, start_time, input_tokens
+                    prompt, config, model, start_time, input_tokens
                 )
             else:
-                # Handle regular response
+                # Handle regular response - pass prompt as string like test script
                 response = await self.client.aio.models.generate_content(
                     model=model or self.chat_model,
-                    contents=contents,
+                    contents=prompt,  # Pass as string, not list
                     config=config,
                 )
 
@@ -476,20 +475,17 @@ class GeminiService:
         start_time = datetime.now(timezone.utc)
         
         try:
-            # Create parts
-            parts = [Part.from_text(text)]
-            
+            # For multimodal, we need to handle it differently
+            # For now, just use text-only approach
             if media_url and media_type:
-                # Add media part
-                parts.append(Part.from_uri(uri=media_url, mime_type=media_type))
-            
-            # Create content
-            contents = [Content(parts=parts, role="user")]
+                prompt = f"{text}\n\n[Note: Media file provided at {media_url}]"
+            else:
+                prompt = text
             
             # Generate response
             response = await self.client.aio.models.generate_content(
                 model=self.multimodal_model,
-                contents=contents,
+                contents=prompt,
                 config=GenerateContentConfig(
                     temperature=kwargs.get("temperature", 0.7),
                     max_output_tokens=kwargs.get("max_tokens", 1000),

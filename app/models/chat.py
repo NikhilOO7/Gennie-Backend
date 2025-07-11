@@ -31,7 +31,7 @@ class Chat(Base):
     description = Column(Text, nullable=True)
     
     # Chat configuration
-    ai_model = Column(String(50), default="gpt-3.5-turbo", nullable=False)
+    ai_model = Column(String(50), default="gemini-2.0-flash-001", nullable=False)
     system_prompt = Column(Text, nullable=True)
     temperature = Column(Float, default=0.7, nullable=False)
     max_tokens = Column(Integer, default=1000, nullable=False)
