@@ -30,6 +30,8 @@ from app.services.emotion_service import emotion_service
 from app.services.personalization import personalization_service
 from app.services.prompt_service import prompt_service
 from app.services.rag_service import rag_service
+from app.schemas import UserTopicsResponse, UserTopicsUpdate
+from app.services.topics_service import topics_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,6 +88,8 @@ class PreferencesUpdate(BaseModel):
     timezone: Optional[str] = None
     interests: Optional[List[str]] = None
     avoid_topics: Optional[List[str]] = None
+    topics: Optional[List[str]] = Field(None, max_length=20)
+
 
 
 def transform_simple_preferences_to_personalization_format(simple_prefs: Dict[str, Any]) -> Dict[str, Any]:
@@ -787,6 +791,40 @@ async def update_personalization_preferences(
             detail="Failed to update preferences"
         )
 
+@router.get("/topics", response_model=UserTopicsResponse)
+async def get_user_topics(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get user's topic interests and recommendations"""
+    try:
+        topics_data = await topics_service.get_user_topics(db, current_user.id)
+        return UserTopicsResponse(**topics_data)
+    except Exception as e:
+        logger.error(f"Failed to get user topics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve topics"
+        )
+
+@router.put("/topics", response_model=UserTopicsResponse)
+async def update_user_topics(
+    topics_update: UserTopicsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user's topic interests"""
+    try:
+        topics_data = await topics_service.update_user_topics(
+            db, current_user.id, topics_update.topics
+        )
+        return UserTopicsResponse(**topics_data)
+    except Exception as e:
+        logger.error(f"Failed to update topics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update topics"
+        )
 
 # Get personalization preferences endpoint
 @router.get("/personalization", response_model=Dict[str, Any])

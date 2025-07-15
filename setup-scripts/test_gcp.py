@@ -37,7 +37,7 @@ try:
     # model = genai.GenerativeModel('gemini-2.0-flash-exp') # No, use client.get_model or specify in generate_content
 
     response = client.models.generate_content( # This method is for client-based model interaction
-        model="gemini-1.5-flash-latest", # Use the correct model name
+        model="gemini-2.0-flash-exp", # Use the correct model name
         contents="Explain how AI works in a few words"
     )
     print(response.text)

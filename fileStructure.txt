@@ -7,6 +7,7 @@
 │   ├── script.py.mako
 │   └── versions
 │       ├── 5578f8b9db9f_initial_tables_already_exist.py
+│       ├── add_topic_personalization.py
 │       └── backup_793e27aceba8_initial_schema.py
 ├── alembic.ini
 ├── app
@@ -45,6 +46,7 @@
 │   │   ├── prompt_service.py
 │   │   ├── rag_service.py
 │   │   ├── speech_service.py
+│   │   ├── topics_service.py
 │   │   ├── tts_service.py
 │   │   └── utils.py
 │   └── utils
@@ -85,7 +87,8 @@
 │       │   │   ├── ChatHeader.js
 │       │   │   ├── ChatInterface.js
 │       │   │   ├── Message.js
-│       │   │   └── MessageInput.js
+│       │   │   ├── MessageInput.js
+│       │   │   └── NewChatModal.js
 │       │   ├── dashboard
 │       │   │   ├── Dashboard.js
 │       │   │   └── Sidebar.js
@@ -141,4 +144,4 @@
     └── unit
         └── __init__.py
 
-37 directories, 105 files
+37 directories, 108 files

@@ -1,6 +1,6 @@
 {
-  "hash": "218f4296175dde598f7bf43ad66dbb50",
-  "last_migration": "2025-07-11T10:49:47.438244",
+  "hash": "ad7938a480e0302c276bebf9daf9ffba",
+  "last_migration": "2025-07-11T21:06:10.287360",
   "tables": [
     "users",
     "messages",

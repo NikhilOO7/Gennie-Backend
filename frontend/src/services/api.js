@@ -152,6 +152,30 @@ class ApiService {
   async getVoices() {
     return this.request('/voice/voices');
   }
+
+  async getUserTopics() {
+    return this.request('/ai/topics');
+  }
+
+  async updateUserTopics(topics) {
+    return this.request('/ai/topics', {
+      method: 'PUT',
+      body: JSON.stringify({ topics }),
+    });
+  }
+
+  // Update createChat method
+  async createChat(chatData) {
+    return this.request('/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: chatData.title,
+        description: chatData.description,
+        chat_mode: chatData.mode || 'text',
+        related_topic: chatData.topic || null
+      }),
+    });
+  }
 }
 
 export default new ApiService();

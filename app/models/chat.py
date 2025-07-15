@@ -5,6 +5,7 @@ Chat Model - Conversation session management
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, JSON, ForeignKey, Index, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import uuid
@@ -74,6 +75,9 @@ class Chat(Base):
     # Relationships
     user = relationship("User", back_populates="chats")
     messages = relationship("Message", back_populates="chat", cascade="all, delete-orphan")
+
+    related_topic = Column(String(50), nullable=True, index=True)
+    chat_mode = Column(String(20), default='text', nullable=False)
     
     # Indexes for better performance
     __table_args__ = (
@@ -423,3 +427,15 @@ class Chat(Base):
         """Update the last activity timestamp"""
         from datetime import datetime, timezone
         self.updated_at = datetime.now(timezone.utc)
+
+    @classmethod
+    async def get_topic_chats(cls, db: AsyncSession, user_id: int, topic: str):
+        """Get all chats related to a specific topic"""
+        result = await db.execute(
+            select(cls)
+            .where(cls.user_id == user_id)
+            .where(cls.related_topic == topic)
+            .where(cls.is_deleted == False)
+            .order_by(cls.last_activity_at.desc())
+        )
+        return result.scalars().all()

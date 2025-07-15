@@ -12,13 +12,22 @@ class UnifiedWebSocketService {
     this.currentChatId = null;
     this.audioChunks = new Map();
     this.messageQueue = [];
+    
+    // Configure backend URL based on environment
+    this.backendHost = process.env.REACT_APP_BACKEND_URL || 'localhost:8000';
+    // Remove any protocol from the backend host
+    this.backendHost = this.backendHost.replace(/^https?:\/\//, '');
   }
 
   connect(chatId) {
     this.currentChatId = chatId;
     const token = localStorage.getItem('access_token');
+    
+    // Use the backend host instead of window.location.host
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/chat/${chatId}?token=${token}`;
+    const wsUrl = `${protocol}//${this.backendHost}/api/v1/ws/chat/${chatId}?token=${token}`;
+    
+    console.log('Connecting to WebSocket:', wsUrl);
     
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
@@ -44,11 +53,15 @@ class UnifiedWebSocketService {
       }
     };
 
-    this.ws.onclose = () => {
-      console.log('WebSocket disconnected');
+    this.ws.onclose = (event) => {
+      console.log('WebSocket disconnected:', event.code, event.reason);
       this.isConnected = false;
       this.emit('disconnected');
-      this.attemptReconnect();
+      
+      // Only attempt reconnect if it wasn't a normal closure
+      if (event.code !== 1000 && event.code !== 1001) {
+        this.attemptReconnect();
+      }
     };
 
     this.ws.onerror = (error) => {
@@ -86,72 +99,50 @@ class UnifiedWebSocketService {
       const totalChunks = view.getUint32(offset + 4, true);
       const audioData = new Uint8Array(arrayBuffer, offset + 8);
       
-      this.handleAudioChunk(messageId, chunkIndex, totalChunks, audioData);
+      if (!this.audioChunks.has(messageId)) {
+        this.audioChunks.set(messageId, new Array(totalChunks));
+      }
+      
+      this.audioChunks.get(messageId)[chunkIndex] = audioData;
+      
+      // Check if all chunks received
+      const chunks = this.audioChunks.get(messageId);
+      if (chunks.every(chunk => chunk !== undefined)) {
+        // Combine chunks
+        const combinedAudio = audioStreamingUtils.combineAudioChunks(chunks);
+        
+        // Emit complete audio event
+        this.emit('audio_received', {
+          messageId,
+          audioData: combinedAudio,
+        });
+        
+        // Clean up
+        this.audioChunks.delete(messageId);
+      }
     }
-  }
-
-  handleAudioChunk(messageId, chunkIndex, totalChunks, audioData) {
-    if (!this.audioChunks.has(messageId)) {
-      this.audioChunks.set(messageId, {
-        chunks: new Array(totalChunks),
-        received: 0,
-      });
-    }
-    
-    const audioInfo = this.audioChunks.get(messageId);
-    audioInfo.chunks[chunkIndex] = audioData;
-    audioInfo.received++;
-    
-    if (audioInfo.received === totalChunks) {
-      this.reassembleAndPlayAudio(messageId);
-    }
-  }
-
-  async reassembleAndPlayAudio(messageId) {
-    const audioInfo = this.audioChunks.get(messageId);
-    if (!audioInfo) return;
-    
-    const totalLength = audioInfo.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combinedAudio = new Uint8Array(totalLength);
-    
-    let offset = 0;
-    for (const chunk of audioInfo.chunks) {
-      combinedAudio.set(chunk, offset);
-      offset += chunk.length;
-    }
-    
-    const audioBlob = new Blob([combinedAudio], { type: 'audio/mp3' });
-    this.emit('audioReceived', { messageId, audioBlob });
-    
-    this.audioChunks.delete(messageId);
   }
 
   send(message) {
-    if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
-      return true;
     } else {
-      // Queue message for later sending
+      console.warn('WebSocket not connected, queuing message');
       this.messageQueue.push(message);
-      return false;
     }
   }
 
-  sendChatMessage(content) {
-    return this.send({
-      type: 'chat_message',
-      content: content,
-      timestamp: new Date().toISOString()
-    });
+  sendBinary(data) {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    } else {
+      console.warn('WebSocket not connected, cannot send binary data');
+    }
   }
 
-  sendAudioChunk(audioData) {
-    if (!this.isConnected || !this.ws) return;
-    
-    if (audioData instanceof ArrayBuffer) {
-      this.ws.send(audioData);
-    } else if (audioData instanceof Uint8Array) {
-      this.ws.send(audioData.buffer);
+  sendAudioData(audioData) {
+    if (audioData instanceof ArrayBuffer || audioData instanceof Uint8Array) {
+      this.ws.send(audioData.buffer || audioData);
     }
   }
 
@@ -194,7 +185,7 @@ class UnifiedWebSocketService {
 
   disconnect() {
     if (this.ws) {
-      this.ws.close();
+      this.ws.close(1000, 'Normal closure');
       this.ws = null;
     }
     this.isConnected = false;

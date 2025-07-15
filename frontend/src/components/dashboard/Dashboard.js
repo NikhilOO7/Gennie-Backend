@@ -4,6 +4,7 @@ import ChatInterface from '../chat/ChatInterface';
 import HealthDashboard from '../health/HealthDashboard';
 import UserProfile from '../profile/UserProfile';
 import SettingsModal from '../settings/SettingsModal';
+import NewChatModal from '../chat/NewChatModal';
 import apiService from '../../services/api';
 import { styles } from '../../utils/styles';
 import { saveToLocalStorage, getFromLocalStorage } from '../../utils/helpers';
@@ -15,11 +16,26 @@ const Dashboard = () => {
   const [healthStatus, setHealthStatus] = useState(null);
   const [darkMode, setDarkMode] = useState(getFromLocalStorage('darkMode', false));
   const [showSettings, setShowSettings] = useState(false);
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [userTopics, setUserTopics] = useState([]);
 
   useEffect(() => {
     fetchChats();
     fetchHealthStatus();
+    fetchUserTopics();
   }, []);
+
+  // Add new function
+  const fetchUserTopics = async () => {
+    try {
+      const data = await apiService.getUserTopics();
+      setUserTopics(data.available_topics.filter(topic => 
+        data.selected_topics.includes(topic.id)
+      ));
+    } catch (error) {
+      console.error('Failed to fetch user topics:', error);
+    }
+  };
 
   useEffect(() => {
     if (darkMode) {
@@ -48,15 +64,22 @@ const Dashboard = () => {
     }
   };
 
-  const createNewChat = async () => {
+  const createNewChat = async (chatConfig) => {
     try {
+      const title = `${chatConfig.mode === 'voice' ? 'Voice' : 'Text'} Chat ${chats.length + 1}`;
+      const topic = userTopics.find(t => t.id === chatConfig.topic);
+      
       const newChat = await apiService.createChat({
-        title: `Chat ${chats.length + 1}`,
-        description: 'New conversation'
+        title: topic ? `${topic.name} Chat` : title,
+        description: topic ? `${chatConfig.mode} conversation about ${topic.name}` : `New ${chatConfig.mode} conversation`,
+        mode: chatConfig.mode,
+        topic: chatConfig.topic
       });
+      
       setChats([newChat, ...chats]);
       setActiveChat(newChat);
       setActiveTab('chat');
+      setShowNewChatModal(false);
     } catch (error) {
       console.error('Failed to create chat:', error);
     }
@@ -110,7 +133,7 @@ const Dashboard = () => {
         chats={chats}
         activeChat={activeChat}
         setActiveChat={setActiveChat}
-        onCreateNewChat={createNewChat}
+        onCreateNewChat={() => setShowNewChatModal(true)}
         onDeleteChat={deleteChat}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
@@ -127,6 +150,13 @@ const Dashboard = () => {
           darkMode={darkMode}
         />
       )}
+      
+      <NewChatModal
+        isOpen={showNewChatModal}
+        onClose={() => setShowNewChatModal(false)}
+        onCreate={createNewChat}
+        userTopics={userTopics}
+      />
     </div>
   );
 };

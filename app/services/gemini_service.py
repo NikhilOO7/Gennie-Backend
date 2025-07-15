@@ -61,8 +61,8 @@ class GeminiService:
             self.client = genai.Client(api_key=gemini_api_key)
             
             # Set model names
-            self.chat_model = "gemini-1.5-flash-latest"
-            self.multimodal_model = "gemini-1.5-flash-latest"
+            self.chat_model = "gemini-2.0-flash-exp"
+            self.multimodal_model = "gemini-2.0-flash-exp"
             self.embeddings_model = "text-embedding-004"
             
             logger.info("✓ Gemini client initialized (Developer API mode)")
@@ -72,6 +72,16 @@ class GeminiService:
             self.default_temperature = settings.GEMINI_TEMPERATURE
             self.default_max_tokens = settings.GEMINI_MAX_TOKENS
             self.default_top_p = settings.GEMINI_TOP_P
+
+            self.default_config = GenerateContentConfig(
+                temperature=settings.GEMINI_TEMPERATURE,
+                top_p=settings.GEMINI_TOP_P,
+                top_k=settings.GEMINI_TOP_K,
+                candidate_count=settings.GEMINI_CANDIDATE_COUNT,
+                max_output_tokens=settings.GEMINI_MAX_TOKENS,
+                stop_sequences=settings.GEMINI_STOP_SEQUENCES if settings.GEMINI_STOP_SEQUENCES else None,
+                response_mime_type="text/plain",
+            )
             
             # Safety settings
             self.safety_settings = [

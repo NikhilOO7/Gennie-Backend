@@ -22,6 +22,7 @@ from app.auto_migrate import auto_migrate
 from app.config import settings
 from app.database import create_tables, check_db_health, check_redis_health, cleanup_database
 from app.routers import auth, users, chat, ai, websocket, health, voice
+from app.services import gemini_service, emotion_service, personalization_service
 
 
 from app.middleware import (
@@ -76,20 +77,20 @@ async def lifespan(app: FastAPI):
         await create_tables()
         logger.info("✅ Database tables created/verified")
         # Then, check for and apply any schema changes
-        if settings.ENVIRONMENT == "development":
-            # In development, automatically create and apply migrations
-            migration_success = await auto_migrate("auto")
-            if migration_success:
-                logger.info("✅ Database schema synchronized automatically")
-            else:
-                logger.warning("⚠️  Some schema changes require manual review")
-        else:
-            # In production, only apply safe changes (new tables/columns)
-            migration_success = await auto_migrate("safe")
-            if migration_success:
-                logger.info("✅ Safe schema updates applied")
-            else:
-                logger.warning("⚠️  Schema changes detected - manual migration required")
+        # if settings.ENVIRONMENT == "development":
+        #     # In development, automatically create and apply migrations
+        #     migration_success = await auto_migrate("auto")
+        #     if migration_success:
+        #         logger.info("✅ Database schema synchronized automatically")
+        #     else:
+        #         logger.warning("⚠️  Some schema changes require manual review")
+        # else:
+        #     # In production, only apply safe changes (new tables/columns)
+        #     migration_success = await auto_migrate("safe")
+        #     if migration_success:
+        #         logger.info("✅ Safe schema updates applied")
+        #     else:
+        #         logger.warning("⚠️  Schema changes detected - manual migration required")
         
         # 2. Health checks
         startup_tasks.append("Health checks")
@@ -109,7 +110,7 @@ async def lifespan(app: FastAPI):
         
         # 3. Initialize services
         startup_tasks.append("Service initialization")
-        from app.services import gemini_service, emotion_service, personalization_service
+        
         
         # Test GeminiAI connection
         if await gemini_service.health_check():
@@ -203,7 +204,7 @@ app.include_router(chat, prefix="/api/v1/chat", tags=["Chat"])
 app.include_router(ai, prefix="/api/v1/ai", tags=["AI"])
 app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
 app.include_router(health, prefix="/api/v1", tags=["Health"])  # Changed to include /api/v1
-app.include_router(voice.router)
+app.include_router(voice.router, prefix="/api/v1/voice", tags=["Voice"])
 
 # Root endpoint
 @app.get("/", include_in_schema=False)

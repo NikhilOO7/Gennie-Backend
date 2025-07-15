@@ -90,38 +90,50 @@ class UserPreference(Base):
         """Get default user preferences"""
         return {
             # Communication preferences
-            "conversation_style": "friendly",  # friendly, formal, casual, professional
-            "preferred_response_length": "medium",  # short, medium, long
-            "humor_level": "moderate",  # none, light, moderate, high
-            "formality_level": "neutral",  # very_casual, casual, neutral, formal, very_formal
+            "conversation_style": "friendly",
+            "preferred_response_length": "medium",
+            "humor_level": "moderate",
+            "formality_level": "neutral",
             
             # Content preferences
-            "interests": [],  # List of topics the user is interested in
-            "avoid_topics": [],  # Topics to avoid
-            "language": "en",  # Language preference
-            "technical_level": "intermediate",  # beginner, intermediate, advanced, expert
+            "interests": ["tech", "health", "cooking"],  # Default topics
+            "avoid_topics": [],
+            "language": "en",
+            "technical_level": "intermediate",
+            "emotional_support_level": "standard",
             
-            # Interaction preferences
-            "emotional_support_level": "standard",  # minimal, standard, high
-            "proactivity": "moderate",  # low, moderate, high
-            "question_asking": "moderate",  # low, moderate, high
-            "context_awareness": "high",  # low, medium, high
+            # New topic preferences
+            "topic_interests": {
+                "tech": {"selected": True, "engagement_score": 0.8},
+                "science": {"selected": False, "engagement_score": 0.0},
+                "health": {"selected": True, "engagement_score": 0.7},
+                "cooking": {"selected": True, "engagement_score": 0.6},
+                "travel": {"selected": False, "engagement_score": 0.0},
+                "music": {"selected": False, "engagement_score": 0.0},
+                "art": {"selected": False, "engagement_score": 0.0},
+                "sports": {"selected": False, "engagement_score": 0.0},
+                "gaming": {"selected": False, "engagement_score": 0.0},
+                "books": {"selected": False, "engagement_score": 0.0},
+                "movies": {"selected": False, "engagement_score": 0.0},
+                "business": {"selected": False, "engagement_score": 0.0},
+                "finance": {"selected": False, "engagement_score": 0.0},
+                "history": {"selected": False, "engagement_score": 0.0},
+                "philosophy": {"selected": False, "engagement_score": 0.0},
+                "nature": {"selected": False, "engagement_score": 0.0},
+                "space": {"selected": False, "engagement_score": 0.0},
+                "fashion": {"selected": False, "engagement_score": 0.0},
+                "cars": {"selected": False, "engagement_score": 0.0},
+                "pets": {"selected": False, "engagement_score": 0.0}
+            },
             
-            # UI/UX preferences
-            "theme": "light",  # light, dark, auto
+            # Display preferences
+            "ui_theme": "system",
             "notification_preferences": {
                 "email": True,
-                "push": False,
-                "in_app": True
-            },
-            "timezone": "UTC",
-            
-            # Privacy preferences
-            "data_retention": "standard",  # minimal, standard, extended
-            "analytics_opt_in": True,
-            "personalization_level": "full"  # basic, standard, full
+                "push": True,
+                "sound": True
+            }
         }
-    
     @staticmethod
     def get_default_features() -> Dict[str, bool]:
         """Get default feature flags"""
@@ -306,3 +318,30 @@ class UserPreference(Base):
         self.interaction_patterns = {}
         self.learning_data = {}
         self.updated_at = datetime.now(timezone.utc)
+
+    def update_topic_interests(self, topics: List[str]):
+        """Update user's topic interests"""
+        if not self.preferences:
+            self.preferences = {}
+        
+        if "topic_interests" not in self.preferences:
+            self.preferences["topic_interests"] = {}
+        
+        # Reset all topics to unselected
+        for topic in self.preferences["topic_interests"]:
+            self.preferences["topic_interests"][topic]["selected"] = False
+        
+        # Set selected topics
+        for topic in topics:
+            if topic not in self.preferences["topic_interests"]:
+                self.preferences["topic_interests"][topic] = {"selected": True, "engagement_score": 0.5}
+            else:
+                self.preferences["topic_interests"][topic]["selected"] = True
+        
+        # Update the simple interests list for backward compatibility
+        self.preferences["interests"] = topics
+        
+        # Mark as modified for SQLAlchemy
+        session = object_session(self)
+        if session:
+            flag_modified(self, 'preferences')

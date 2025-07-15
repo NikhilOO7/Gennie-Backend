@@ -175,6 +175,20 @@ Analytical response:""",
             
             if traits:
                 personality_info = f"User preferences - {', '.join(traits)}"
+            
+            topics = user_preferences.get("interests", [])
+            if topics:
+                topic_names = []
+                for topic_id in topics:
+                    topic_info = topics_service.get_topic_info(topic_id)
+                    if topic_info:
+                        topic_names.append(topic_info["name"])
+                
+                if topic_names:
+                    prompt_parts.append(
+                        f"The user is particularly interested in: {', '.join(topic_names)}. "
+                        f"When relevant, incorporate these interests into your responses."
+                    )
         
         # Build conversation style
         conversation_style = ""

@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+import re
 
 # Base schemas
 class BaseSchema(BaseModel):
@@ -10,8 +11,8 @@ class BaseSchema(BaseModel):
     class Config:
         # Enable ORM mode for SQLAlchemy integration
         from_attributes = True
-        # Allow population by field name or alias
-        allow_population_by_field_name = True
+        # FIXED: Changed from allow_population_by_field_name to validate_by_name for Pydantic V2
+        populate_by_name = True
         # Validate assignment
         validate_assignment = True
         # Use enum values
@@ -23,10 +24,29 @@ class TimestampMixin(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class TopicInfo(BaseSchema):
+    """Topic information schema"""
+    id: str
+    name: str
+    icon: str
+    description: Optional[str] = None
+
+class UserTopicsUpdate(BaseSchema):
+    """Schema for updating user topics"""
+    topics: List[str] = Field(..., min_length=0, max_length=20)
+
+class UserTopicsResponse(BaseSchema):
+    """Response for user topics"""
+    selected_topics: List[str]
+    available_topics: List[TopicInfo]
+    topic_stats: Dict[str, Any]
+    recommendations: List[TopicInfo]
+
 # User schemas
 class UserBase(BaseSchema):
     """Base user schema"""
-    username: str = Field(..., min_length=3, max_length=50, regex=r'^[a-zA-Z0-9_]+$')
+    # FIXED: Changed regex to pattern for Pydantic V2
+    username: str = Field(..., min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_]+$')
     email: EmailStr
     first_name: Optional[str] = Field(None, max_length=100)
     last_name: Optional[str] = Field(None, max_length=100)
@@ -93,6 +113,8 @@ class ChatBase(BaseSchema):
 class ChatCreate(ChatBase):
     """Schema for chat creation"""
     system_prompt: Optional[str] = Field(None, max_length=2000)
+    chat_mode: str = Field('text', pattern="^(text|voice)$")
+    related_topic: Optional[str] = None
 
 class ChatUpdate(BaseSchema):
     """Schema for chat updates"""
@@ -282,6 +304,9 @@ class WebSocketMessage(BaseSchema):
 __all__ = [
     "BaseSchema",
     "TimestampMixin",
+    "TopicInfo",
+    "UserTopicsUpdate",
+    "UserTopicsResponse",
     "UserBase",
     "UserCreate", 
     "UserUpdate",

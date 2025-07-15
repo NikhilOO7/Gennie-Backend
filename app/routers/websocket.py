@@ -341,6 +341,16 @@ async def handle_chat_message(
     """Handle chat message via WebSocket"""
     
     content = message_data.get("content", "").strip()
+
+    # Get chat details including topic
+    chat = await db.get(Chat, chat_id)
+    
+    # If chat has a topic, include it in the AI context
+    if chat and chat.related_topic:
+        topic_info = topics_service.get_topic_info(chat.related_topic)
+        if topic_info:
+            # Add to the system prompt or context
+            system_context = f"This conversation is related to {topic_info['name']}. "
     
     if not content:
         return {

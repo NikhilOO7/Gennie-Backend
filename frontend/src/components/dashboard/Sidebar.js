@@ -97,17 +97,15 @@ const Sidebar = ({
                 borderRadius: '8px',
                 border: 'none',
                 backgroundColor: activeTab === tab.id ? '#e0e7ff' : 'transparent',
-                color: activeTab === tab.id ? '#4338ca' : darkMode ? '#d1d5db' : '#6b7280',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: '500',
-                transition: 'all 0.2s',
+                color: activeTab === tab.id ? '#4338ca' : darkMode ? '#f3f4f6' : '#6b7280',
                 width: '100%',
-                textAlign: 'left'
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
               }}
             >
               <tab.icon size={20} />
-              {tab.label}
+              <span style={{ fontSize: '14px', fontWeight: '500' }}>{tab.label}</span>
             </button>
           ))}
         </div>
@@ -115,94 +113,164 @@ const Sidebar = ({
 
       {/* Chat List */}
       {activeTab === 'chat' && (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+        <div style={{ 
+          flex: 1, 
+          overflowY: 'auto', 
+          padding: '8px',
+          borderTop: '1px solid #e5e7eb'
+        }}>
           <p style={{ 
             fontSize: '12px', 
-            fontWeight: '600', 
             color: '#6b7280', 
-            padding: '8px',
-            textTransform: 'uppercase'
+            padding: '8px 12px',
+            fontWeight: '500'
           }}>
-            Recent Chats
+            Your Chats
           </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            {chats.map((chat) => (
-              <div
-                key={chat.id}
-                onClick={() => setActiveChat(chat)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '12px',
-                  borderRadius: '8px',
-                  border: activeChat?.id === chat.id ? '2px solid #c7d2fe' : '1px solid #e5e7eb',
-                  backgroundColor: activeChat?.id === chat.id ? '#e0e7ff' : darkMode ? '#374151' : '#f9fafb',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  <p style={{ 
+          {chats.map((chat) => (
+            <div
+              key={chat.id}
+              onClick={() => setActiveChat(chat)}
+              style={{
+                padding: '12px',
+                marginBottom: '4px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                transition: 'background-color 0.2s',
+                backgroundColor: activeChat?.id === chat.id ? '#e0e7ff' : 'transparent',
+                ':hover': {
+                  backgroundColor: darkMode ? '#374151' : '#f3f4f6'
+                }
+              }}
+              onMouseEnter={(e) => {
+                if (activeChat?.id !== chat.id) {
+                  e.currentTarget.style.backgroundColor = darkMode ? '#374151' : '#f3f4f6';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (activeChat?.id !== chat.id) {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                }
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ 
                     fontWeight: '500', 
-                    fontSize: '14px',
-                    color: darkMode ? '#f3f4f6' : '#111827'
+                    color: activeChat?.id === chat.id ? '#4338ca' : darkMode ? '#f3f4f6' : '#111827',
+                    marginBottom: '4px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
                   }}>
                     {chat.title}
-                  </p>
-                  <p style={{ fontSize: '12px', color: '#6b7280' }}>
-                    {formatDate(chat.created_at)}
-                  </p>
+                  </div>
+                  <div style={{ 
+                    fontSize: '12px', 
+                    color: '#9ca3af',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {chat.description}
+                  </div>
+                  {chat.last_message_at && (
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
+                      {formatDate(chat.last_message_at)}
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={(e) => onDeleteChat(chat.id, e)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    color: '#6b7280',
-                    padding: '4px'
-                  }}
-                  title="Delete chat"
-                >
-                  <Trash2 size={16} />
-                </button>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginLeft: '8px' }}>
+                  {chat.chat_mode && (
+                    <span style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      borderRadius: '10px',
+                      backgroundColor: activeChat?.id === chat.id ? '#4f46e5' : '#f3f4f6',
+                      color: activeChat?.id === chat.id ? 'white' : '#6b7280',
+                      fontWeight: '500',
+                      whiteSpace: 'nowrap'
+                    }}>
+                      {chat.chat_mode === 'voice' ? '🎤' : '💬'}
+                    </span>
+                  )}
+                  <button
+                    onClick={(e) => onDeleteChat(chat.id, e)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '4px',
+                      color: '#6b7280',
+                      opacity: 0,
+                      transition: 'opacity 0.2s'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.opacity = '1';
+                      e.stopPropagation();
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.opacity = '0';
+                    }}
+                    title="Delete chat"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
+          {chats.length === 0 && (
+            <div style={{ 
+              textAlign: 'center', 
+              padding: '20px',
+              color: '#9ca3af',
+              fontSize: '14px'
+            }}>
+              No chats yet. Create one to get started!
+            </div>
+          )}
         </div>
       )}
 
-      {/* Bottom Actions */}
-      <div style={{ padding: '16px', borderTop: '1px solid #e5e7eb' }}>
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-          <button
-            onClick={() => setShowSettings(true)}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#6b7280',
-              padding: '8px'
-            }}
-            title="Settings"
-          >
-            <Settings size={20} />
-          </button>
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#6b7280',
-              padding: '8px'
-            }}
-            title="Toggle theme"
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-        </div>
+      {/* Bottom Controls */}
+      <div style={{ 
+        padding: '16px', 
+        borderTop: '1px solid #e5e7eb',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }}>
+        <button
+          onClick={() => setDarkMode(!darkMode)}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            color: '#6b7280',
+            padding: '8px',
+            borderRadius: '8px',
+            transition: 'background-color 0.2s'
+          }}
+          title={darkMode ? 'Light mode' : 'Dark mode'}
+        >
+          {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+        </button>
+        <button
+          onClick={() => setShowSettings(true)}
+          style={{
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            color: '#6b7280',
+            padding: '8px',
+            borderRadius: '8px',
+            transition: 'background-color 0.2s'
+          }}
+          title="Settings"
+        >
+          <Settings size={20} />
+        </button>
       </div>
     </div>
   );
