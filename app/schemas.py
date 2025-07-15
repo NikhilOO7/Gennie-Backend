@@ -109,12 +109,13 @@ class ChatBase(BaseSchema):
     ai_model: str = Field(default="gemini-2.0-flash-001", max_length=50)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1000, ge=1, le=4000)
+    chat_mode: str = Field('text', pattern="^(text|voice)$")
+    related_topic: Optional[str] = None
 
 class ChatCreate(ChatBase):
     """Schema for chat creation"""
     system_prompt: Optional[str] = Field(None, max_length=2000)
-    chat_mode: str = Field('text', pattern="^(text|voice)$")
-    related_topic: Optional[str] = None
+    
 
 class ChatUpdate(BaseSchema):
     """Schema for chat updates"""

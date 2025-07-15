@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 import logging
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, Field
 
 from app.database import get_db, get_redis
 from app.models.user import User
@@ -29,6 +29,8 @@ class ChatCreate(BaseModel):
     system_prompt: Optional[str] = None
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1000
+    chat_mode: str = Field('text', pattern="^(text|voice)$")
+    related_topic: Optional[str] = None
     
     @validator('temperature')
     def validate_temperature(cls, v):
@@ -72,6 +74,8 @@ class ChatResponse(BaseModel):
     updated_at: Optional[datetime]
     last_activity_at: Optional[datetime]
     last_message_at: Optional[datetime]
+    chat_mode: str = 'text'
+    related_topic: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -148,7 +152,9 @@ async def create_chat(
             ai_model=chat_data.ai_model,
             system_prompt=chat_data.system_prompt,
             temperature=chat_data.temperature or 0.7,
-            max_tokens=chat_data.max_tokens or 1000
+            max_tokens=chat_data.max_tokens or 1000,
+            chat_mode=chat_data.chat_mode,
+            related_topic=chat_data.related_topic
         )
         
         db.add(chat)

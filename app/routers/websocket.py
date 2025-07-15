@@ -185,8 +185,16 @@ async def websocket_endpoint(
     user = None
     
     try:
+        # Log the connection attempt
+        logger.info(f"WebSocket connection attempt for chat {chat_id}")
+        
         # Verify token and get user
-        user = await get_user_from_token(token, db)
+        try:
+            user = await get_user_from_token(token, db)
+        except Exception as e:
+            logger.error(f"Token verification failed: {str(e)}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token")
+            return
         
         # Verify chat access
         result = await db.execute(
@@ -199,11 +207,13 @@ async def websocket_endpoint(
         chat = result.scalar_one_or_none()
         
         if not chat:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            logger.error(f"Chat {chat_id} not found or access denied for user {user.id}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Chat not found")
             return
         
         # Connect websocket
         await manager.connect(websocket, connection_id, user.id, chat_id)
+        logger.info(f"WebSocket connected successfully: {connection_id}")
         
         # Send connection confirmation
         await manager.send_personal_message({
@@ -244,24 +254,27 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected normally: {connection_id}")
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}", exc_info=True)
+        logger.error(f"WebSocket error for connection {connection_id}: {str(e)}", exc_info=True)
         try:
-            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=str(e)[:120])
         except:
             pass
     finally:
         # Clean up connection
-        manager.disconnect(connection_id)
+        if connection_id:
+            manager.disconnect(connection_id)
         
         # Notify other participants if user was authenticated
         if user and chat_id:
-            await manager.send_to_chat({
-                "type": "user_left",
-                "user_id": user.id,
-                "username": user.username,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }, chat_id)
-
+            try:
+                await manager.send_to_chat({
+                    "type": "user_left",
+                    "user_id": user.id,
+                    "username": user.username,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }, chat_id)
+            except:
+                pass
 
 async def get_user_from_token(token: str, db: AsyncSession) -> User:
     """Get user from JWT token"""
@@ -290,6 +303,62 @@ async def get_user_from_token(token: str, db: AsyncSession) -> User:
     
     return user
 
+async def handle_voice_stream_start(message_data, connection_id, user, chat, db):
+    """Handle voice stream start"""
+    websocket = manager.active_connections.get(connection_id)
+    if not websocket:
+        return {
+            "type": "error",
+            "error": "WebSocket connection not found",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    
+    # Create voice session
+    user_id = str(user.id)
+    session_id = str(uuid.uuid4())
+    
+    # Store in manager (add voice_sessions dict if not exists)
+    if not hasattr(manager, 'voice_sessions'):
+        manager.voice_sessions = {}
+    
+    manager.voice_sessions[user_id] = {
+        "session_id": session_id,
+        "connection_id": connection_id,
+        "language_code": message_data.get("language_code", "en-US"),
+        "interim_results": message_data.get("interim_results", True),
+        "sample_rate": message_data.get("sample_rate", 16000),
+        "started_at": datetime.now(timezone.utc)
+    }
+    
+    return {
+        "type": "voice_stream_started",
+        "session_id": session_id,
+        "config": {
+            "language_code": message_data.get("language_code", "en-US"),
+            "sample_rate": message_data.get("sample_rate", 16000),
+            "interim_results": message_data.get("interim_results", True)
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+async def handle_voice_stream_end(message_data, connection_id, user, chat, db):
+    """Handle voice stream end"""
+    user_id = str(user.id)
+    
+    if hasattr(manager, 'voice_sessions') and user_id in manager.voice_sessions:
+        session = manager.voice_sessions.pop(user_id, None)
+        return {
+            "type": "voice_stream_ended",
+            "session_id": session.get("session_id") if session else None,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    
+    return {
+        "type": "error",
+        "error": "No active voice session found",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 
 async def process_websocket_message(
     message_data: Dict[str, Any],
@@ -310,6 +379,10 @@ async def process_websocket_message(
             return await handle_typing_indicator(message_data, connection_id, user, chat, True)
         elif message_type == "typing_stop":
             return await handle_typing_indicator(message_data, connection_id, user, chat, False)
+        elif message_type == "voice_stream_start":  # ADD THIS
+            return await handle_voice_stream_start(message_data, connection_id, user, chat, db)
+        elif message_type == "voice_stream_end":    # ADD THIS
+            return await handle_voice_stream_end(message_data, connection_id, user, chat, db)
         elif message_type == "ping":
             return await handle_ping(message_data, connection_id)
         elif message_type == "get_status":

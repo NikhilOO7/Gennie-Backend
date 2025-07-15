@@ -7,8 +7,10 @@ from datetime import datetime
 import uuid
 import io
 import struct
+from sqlalchemy import select
 
-from app.routers.auth import get_current_user_ws
+from app.routers.auth import verify_token
+from app.models.user import User
 from app.services.gemini_service import gemini_service
 from app.services.speech_service import speech_service
 from app.services.tts_service import tts_service
@@ -80,6 +82,21 @@ async def websocket_endpoint(
     except Exception as e:
         print(f"WebSocket error: {e}")
         manager.disconnect(str(user.id))
+
+async def get_current_user_ws(token: str, db):
+    """Get user from JWT token for WebSocket"""
+    try:
+        payload = verify_token(token)
+        user_id = int(payload.get("sub"))
+        
+        result = await db.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+        
+        return user if user and user.is_active else None
+    except Exception:
+        return None
 
 async def handle_json_message(websocket: WebSocket, user: User, data: dict, db):
     """Handle JSON-based WebSocket messages"""

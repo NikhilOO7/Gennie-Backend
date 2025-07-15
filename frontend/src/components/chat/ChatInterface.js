@@ -4,6 +4,7 @@ import { MessageCircle } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import Message from './Message';
 import MessageInput from './MessageInput';
+import VoiceChat from './VoiceChat';
 import VoiceRecorder from '../voice/VoiceRecorder';
 import RAGVisualization from '../rag/RAGVisualization';
 import apiService from '../../services/api';
@@ -24,13 +25,20 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
 
   useEffect(() => {
     if (activeChat) {
-      fetchMessages(activeChat.id);
-      connectWebSocket(activeChat.id);
+      // Only fetch messages and connect WebSocket for text chats
+      // Voice chats handle their own connections
+      if (!activeChat.chat_mode || activeChat.chat_mode === 'text') {
+        fetchMessages(activeChat.id);
+        connectWebSocket(activeChat.id);
+      }
     }
 
     return () => {
-      unifiedWebSocketService.disconnect();
-      enhancedAudioService.stopAll();
+      // Only disconnect for text chats
+      if (!activeChat?.chat_mode || activeChat?.chat_mode === 'text') {
+        unifiedWebSocketService.disconnect();
+        enhancedAudioService.stopAll();
+      }
     };
   }, [activeChat]);
 
@@ -196,6 +204,12 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
     );
   }
 
+  // Render Voice Chat interface if chat mode is voice
+  if (activeChat.chat_mode === 'voice') {
+    return <VoiceChat activeChat={activeChat} chats={chats} setChats={setChats} />;
+  }
+
+  // Render Text Chat interface (default)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <ChatHeader
@@ -235,7 +249,6 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
       <MessageInput
         onSendMessage={sendMessage}
         disabled={isAiTyping}
-        onToggleVoice={() => setShowVoiceRecorder(!showVoiceRecorder)}
       />
 
       {showVoiceRecorder && (

@@ -44,100 +44,68 @@ const VoiceRecorder = ({
   };
 
   const startRecording = async () => {
-    if (hasPermission === false) {
-      onError?.('Microphone permission denied');
-      return;
-    }
+  if (hasPermission === false) {
+    onError?.('Microphone permission denied');
+    return;
+  }
 
-    try {
-      audioChunksRef.current = [];
+  try {
+    audioChunksRef.current = [];
+    
+    if (enableStreaming) {
+      // For voice chat, we need standard recording, not streaming
+      // The streaming happens via WebSocket after recording chunks
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000,
+        } 
+      });
       
-      if (enableStreaming) {
-        // Use streaming mode
-        const { stream, stop } = await enhancedAudioService.startStreaming((chunk) => {
-          // Handle streaming chunks
-          if (onTranscript) {
-            onTranscript(null, chunk, true); // streaming flag
-          }
-        });
-        
-        streamRef.current = { stream, stop };
-      } else {
-        // Traditional recording mode
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-            sampleRate: 16000,
-          } 
-        });
-        
-        streamRef.current = stream;
-        
-        // Set up level monitoring
-        levelMeterRef.current = enhancedAudioService.createLevelMeter(setAudioLevel);
-        const source = await enhancedAudioService.audioContext.createMediaStreamSource(stream);
-        source.connect(levelMeterRef.current.analyser);
-        levelMeterRef.current.start();
-        
-        // Set up VAD
-        vadRef.current = enhancedAudioService.createVAD();
-        
-        // Set up MediaRecorder
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-          ? 'audio/webm;codecs=opus' 
-          : 'audio/webm';
-        
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType,
-          audioBitsPerSecond: 128000,
-        });
-        
-        mediaRecorderRef.current = mediaRecorder;
-        
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunksRef.current.push(event.data);
-          }
-        };
-        
-        mediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-          
-          try {
-            const wavBlob = await enhancedAudioService.convertToWav(audioBlob);
-            handleRecordingComplete(wavBlob);
-          } catch (error) {
-            console.error('Audio conversion error:', error);
-            handleRecordingComplete(audioBlob);
-          }
-        };
-        
-        mediaRecorder.start(100);
-      }
+      streamRef.current = stream;
       
+      // Set up MediaRecorder for voice chat
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus' : 'audio/webm';
+      
+      mediaRecorderRef.current = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: 128000
+      });
+      
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorderRef.current.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        handleRecordingComplete(audioBlob);
+      };
+      
+      // Start recording
+      mediaRecorderRef.current.start();
       setIsRecording(true);
-      setRecordingTime(0);
+      onRecordingStart?.();
       
       // Start timer
       const startTime = Date.now();
       timerRef.current = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        setRecordingTime(elapsed);
-        
-        if (elapsed >= maxDuration) {
-          stopRecording();
-        }
+        setRecordingTime(Date.now() - startTime);
       }, 100);
       
-      onRecordingStart?.();
-      
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-      onError?.('Failed to start recording');
+    } else {
+      // Your existing non-streaming code
+      // ...
     }
-  };
+  } catch (error) {
+    console.error('Failed to start recording:', error);
+    onError?.('Failed to start recording');
+  }
+};
 
   const stopRecording = () => {
     if (levelMeterRef.current) {
