@@ -16,6 +16,10 @@ import logging
 from redis.asyncio import Redis
 import json
 import asyncio
+from fastapi import UploadFile, File, Form
+import random
+import logging
+import base64
 
 from app.config import settings
 from app.database import get_db, get_redis
@@ -35,6 +39,19 @@ from app.services.topics_service import topics_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+MOCK_TRANSCRIPTIONS = [
+    "Hello, how are you today?",
+    "What's the weather like?",
+    "Can you help me with something?",
+    "Tell me a joke",
+    "What time is it?",
+    "I need assistance with a problem",
+    "Thank you for your help",
+    "That's interesting, tell me more",
+    "How does this work?",
+    "What do you recommend?"
+]
 
 # Request/Response Models
 class ChatRequest(BaseModel):
@@ -90,6 +107,100 @@ class PreferencesUpdate(BaseModel):
     avoid_topics: Optional[List[str]] = None
     topics: Optional[List[str]] = Field(None, max_length=20)
 
+class TTSRequest(BaseModel):
+    """Text-to-speech request model"""
+    text: str = Field(..., min_length=1, max_length=2000)
+    voice_name: Optional[str] = None
+    language_code: Optional[str] = "en-US"
+    audio_format: str = "mp3"
+    speaking_rate: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: float = Field(0.0, ge=-10.0, le=10.0)
+    return_base64: bool = True
+
+
+@router.post("/transcribe-audio")
+async def transcribe_audio_simple(
+    audio: UploadFile = File(...),
+    language_code: str = Form("en-US"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Simple audio transcription endpoint for voice chat
+    """
+    try:
+        # Read the audio file
+        audio_data = await audio.read()
+        logger.info(f"Received audio file: {audio.filename}, size: {len(audio_data)} bytes")
+        
+        # For testing, we'll use a simple mock response
+        # In production, this would call Google Speech-to-Text or similar service
+        
+        # List of test transcriptions
+        test_phrases = [
+            "Hello, how can I help you today?",
+            "What's the weather like?",
+            "Tell me something interesting",
+            "I need help with a problem",
+            "Can you explain how this works?",
+            "Thank you for your assistance",
+            "What do you recommend?",
+            "That's very helpful",
+            "I have a question",
+            "Please tell me more"
+        ]
+        
+        import random
+        transcript = random.choice(test_phrases)
+        
+        # Return transcription result
+        return {
+            "success": True,
+            "transcript": transcript,
+            "confidence": 0.95,
+            "language": language_code,
+            "duration": 2.0
+        }
+        
+    except Exception as e:
+        logger.error(f"Transcription error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to transcribe audio"
+        )
+@router.post("/voice/synthesize")
+async def synthesize_speech(
+    request: TTSRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Mock text-to-speech synthesis
+    Returns a dummy audio response
+    """
+    try:
+        logger.info(f"Mock TTS requested by user {current_user.id}")
+        logger.info(f"Text: {request.text[:50]}...")
+        
+        # For mock, return a tiny valid MP3 as base64
+        dummy_mp3 = b'\xff\xfb\x90\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+        import base64
+        audio_base64 = base64.b64encode(dummy_mp3).decode('utf-8')
+        
+        return {
+            "success": True,
+            "audio_data": audio_base64,
+            "duration": 1.0,
+            "text_length": len(request.text),
+            "_mock": True
+        }
+            
+    except Exception as e:
+        logger.error(f"Mock TTS error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mock synthesis failed: {str(e)}"
+        )
 
 
 def transform_simple_preferences_to_personalization_format(simple_prefs: Dict[str, Any]) -> Dict[str, Any]:

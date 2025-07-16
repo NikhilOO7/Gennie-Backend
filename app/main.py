@@ -204,7 +204,7 @@ app.include_router(chat, prefix="/api/v1/chat", tags=["Chat"])
 app.include_router(ai, prefix="/api/v1/ai", tags=["AI"])
 app.include_router(websocket, prefix="/api/v1/ws", tags=["WebSocket"])
 app.include_router(health, prefix="/api/v1", tags=["Health"])  # Changed to include /api/v1
-app.include_router(voice.router, prefix="/api/v1/voice", tags=["Voice"])
+app.include_router(voice, prefix="/api/v1/voice", tags=["Voice"])
 
 # Root endpoint
 @app.get("/", include_in_schema=False)

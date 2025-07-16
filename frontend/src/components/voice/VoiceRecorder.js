@@ -1,6 +1,6 @@
+// components/voice/VoiceRecorder.js
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import RecordButton from './RecordButton';
-import enhancedAudioService from '../../services/enhancedAudioService';
 import apiService from '../../services/api';
 
 const VoiceRecorder = ({ 
@@ -8,11 +8,13 @@ const VoiceRecorder = ({
   onRecordingStart, 
   onRecordingStop,
   onError,
+  onAudioLevel,
   mode = 'push-to-talk',
   autoSend = true,
   language = 'en-US',
   maxDuration = 60000,
-  enableStreaming = false
+  enableStreaming = false,
+  disabled = false
 }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -24,14 +26,25 @@ const VoiceRecorder = ({
   const streamRef = useRef(null);
   const timerRef = useRef(null);
   const levelMeterRef = useRef(null);
-  const vadRef = useRef(null);
+  const analyserRef = useRef(null);
+  const animationFrameRef = useRef(null);
 
   useEffect(() => {
     checkPermission();
     return () => {
       stopRecording();
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
     };
   }, []);
+
+  // Report audio level to parent
+  useEffect(() => {
+    if (onAudioLevel) {
+      onAudioLevel(audioLevel);
+    }
+  }, [audioLevel, onAudioLevel]);
 
   const checkPermission = async () => {
     try {
@@ -40,21 +53,18 @@ const VoiceRecorder = ({
       setHasPermission(true);
     } catch (error) {
       setHasPermission(false);
+      onError?.('Microphone permission denied');
     }
   };
 
   const startRecording = async () => {
-  if (hasPermission === false) {
-    onError?.('Microphone permission denied');
-    return;
-  }
+    if (disabled || hasPermission === false || isRecording) {
+      return;
+    }
 
-  try {
-    audioChunksRef.current = [];
-    
-    if (enableStreaming) {
-      // For voice chat, we need standard recording, not streaming
-      // The streaming happens via WebSocket after recording chunks
+    try {
+      audioChunksRef.current = [];
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -66,7 +76,31 @@ const VoiceRecorder = ({
       
       streamRef.current = stream;
       
-      // Set up MediaRecorder for voice chat
+      // Set up audio level monitoring
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      microphone.connect(analyser);
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+      
+      // Monitor audio levels
+      const updateLevel = () => {
+        if (!analyserRef.current || !isRecording) return;
+        
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Calculate average level
+        const average = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
+        const normalizedLevel = Math.min(average / 128, 1); // Normalize to 0-1
+        setAudioLevel(normalizedLevel);
+        
+        animationFrameRef.current = requestAnimationFrame(updateLevel);
+      };
+      updateLevel();
+      
+      // Set up MediaRecorder
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
         ? 'audio/webm;codecs=opus' : 'audio/webm';
       
@@ -86,6 +120,12 @@ const VoiceRecorder = ({
         handleRecordingComplete(audioBlob);
       };
       
+      mediaRecorderRef.current.onerror = (error) => {
+        console.error('MediaRecorder error:', error);
+        onError?.('Recording failed');
+        stopRecording();
+      };
+      
       // Start recording
       mediaRecorderRef.current.start();
       setIsRecording(true);
@@ -94,35 +134,43 @@ const VoiceRecorder = ({
       // Start timer
       const startTime = Date.now();
       timerRef.current = setInterval(() => {
-        setRecordingTime(Date.now() - startTime);
+        const elapsed = Date.now() - startTime;
+        setRecordingTime(elapsed);
+        
+        // Auto-stop at max duration
+        if (elapsed >= maxDuration) {
+          stopRecording();
+        }
       }, 100);
       
-    } else {
-      // Your existing non-streaming code
-      // ...
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      onError?.('Failed to start recording: ' + error.message);
     }
-  } catch (error) {
-    console.error('Failed to start recording:', error);
-    onError?.('Failed to start recording');
-  }
-};
+  };
 
   const stopRecording = () => {
-    if (levelMeterRef.current) {
-      levelMeterRef.current.stop();
-      levelMeterRef.current = null;
+    if (analyserRef.current) {
+      analyserRef.current = null;
     }
     
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (error) {
+        console.error('Error stopping MediaRecorder:', error);
+      }
     }
     
     if (streamRef.current) {
-      if (streamRef.current.stop) {
-        streamRef.current.stop();
-      } else if (streamRef.current.getTracks) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+      });
       streamRef.current = null;
     }
     
@@ -133,20 +181,33 @@ const VoiceRecorder = ({
     
     setIsRecording(false);
     setAudioLevel(0);
+    setRecordingTime(0);
     onRecordingStop?.();
   };
 
   const handleRecordingComplete = async (audioBlob) => {
+    if (!audioBlob || audioBlob.size === 0) {
+      onError?.('No audio recorded');
+      return;
+    }
+
     if (autoSend) {
       try {
+        console.log('Sending audio for transcription...');
         const result = await apiService.transcribeAudio(audioBlob, language);
-        onTranscript?.(result.transcript, audioBlob);
+        console.log('Transcription result:', result);
+        
+        if (result.transcript) {
+          onTranscript?.(result.transcript, audioBlob, false);
+        } else {
+          onError?.('No transcript received');
+        }
       } catch (error) {
         console.error('Transcription error:', error);
-        onError?.('Transcription failed');
+        onError?.('Transcription failed: ' + error.message);
       }
     } else {
-      onTranscript?.(null, audioBlob);
+      onTranscript?.(null, audioBlob, false);
     }
   };
 
@@ -162,15 +223,15 @@ const VoiceRecorder = ({
       <div className="recording-controls">
         <RecordButton
           isRecording={isRecording}
-          onMouseDown={mode === 'push-to-talk' ? startRecording : undefined}
-          onMouseUp={mode === 'push-to-talk' ? stopRecording : undefined}
-          onMouseLeave={mode === 'push-to-talk' ? stopRecording : undefined}
-          onTouchStart={mode === 'push-to-talk' ? startRecording : undefined}
-          onTouchEnd={mode === 'push-to-talk' ? stopRecording : undefined}
-          onClick={mode === 'continuous' ? (isRecording ? stopRecording : startRecording) : undefined}
+          onMouseDown={mode === 'push-to-talk' && !disabled ? startRecording : undefined}
+          onMouseUp={mode === 'push-to-talk' && isRecording ? stopRecording : undefined}
+          onMouseLeave={mode === 'push-to-talk' && isRecording ? stopRecording : undefined}
+          onTouchStart={mode === 'push-to-talk' && !disabled ? startRecording : undefined}
+          onTouchEnd={mode === 'push-to-talk' && isRecording ? stopRecording : undefined}
+          onClick={mode === 'continuous' && !disabled ? (isRecording ? stopRecording : startRecording) : undefined}
           mode={mode}
           audioLevel={audioLevel}
-          disabled={hasPermission === false}
+          disabled={disabled || hasPermission === false}
         />
         
         {isRecording && (
@@ -184,6 +245,12 @@ const VoiceRecorder = ({
         <div className="permission-warning">
           <p>Microphone permission required</p>
           <button onClick={checkPermission}>Enable Microphone</button>
+        </div>
+      )}
+      
+      {disabled && hasPermission && (
+        <div className="disabled-warning">
+          <p>Waiting for connection...</p>
         </div>
       )}
     </div>

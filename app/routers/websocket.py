@@ -414,16 +414,6 @@ async def handle_chat_message(
     """Handle chat message via WebSocket"""
     
     content = message_data.get("content", "").strip()
-
-    # Get chat details including topic
-    chat = await db.get(Chat, chat_id)
-    
-    # If chat has a topic, include it in the AI context
-    if chat and chat.related_topic:
-        topic_info = topics_service.get_topic_info(chat.related_topic)
-        if topic_info:
-            # Add to the system prompt or context
-            system_context = f"This conversation is related to {topic_info['name']}. "
     
     if not content:
         return {
@@ -442,6 +432,19 @@ async def handle_chat_message(
         chat_max_tokens = chat.max_tokens
         chat_system_prompt = chat.system_prompt
         
+        # If chat has a topic, include it in the AI context (FIXED)
+        system_context = ""
+        if chat.related_topic:
+            # Check if topics_service is imported, if not, skip this part
+            try:
+                from app.services.topics_service import topics_service
+                topic_info = topics_service.get_topic_info(chat.related_topic)
+                if topic_info:
+                    system_context = f"This conversation is related to {topic_info['name']}. "
+            except ImportError:
+                # Topics service not available, skip
+                pass
+
         # Send typing indicator
         await manager.send_to_chat({
             "type": "ai_typing",

@@ -450,6 +450,9 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
           disabled={!isConnected || connectionError}
           isStreaming={false}
           onAudioLevel={setAudioLevel}
+          mode="push-to-talk"
+          autoSend={true}
+          language="en-US"
         />
 
         <div className="voice-controls">
