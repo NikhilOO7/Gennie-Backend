@@ -422,6 +422,10 @@ async def handle_chat_message(
         }
     
     try:
+        # Detect if this is a voice message
+        is_voice_message = message_data.get("metadata", {}).get("source") == "voice"
+        request_voice_response = message_data.get("request_voice_response", is_voice_message)
+        
         start_time = datetime.now(timezone.utc)
         
         # Store chat_id and user_id to avoid lazy loading issues
@@ -474,7 +478,7 @@ async def handle_chat_message(
         # Emotion detection
         emotion_data = None
         if message_data.get("detect_emotion", True):
-            emotion_result = await emotion_service.analyze_text_emotion(content)
+            emotion_result = await emotion_service.analyze_emotion(content)
             if emotion_result["success"]:
                 emotion_data = emotion_result
         
@@ -540,7 +544,8 @@ async def handle_chat_message(
             message_metadata={
                 "ai_model": chat_ai_model,
                 "websocket_response": True,
-                "user_preferences_applied": bool(user_preferences)
+                "user_preferences_applied": bool(user_preferences),
+                "voice_requested": request_voice_response
             }
         )
         
@@ -572,16 +577,56 @@ async def handle_chat_message(
             "is_typing": False
         }, chat_id)
         
-        # Send AI response to all chat participants
-        await manager.send_to_chat({
+        # After getting AI response, determine if we need TTS
+        needs_voice_response = request_voice_response or is_voice_message
+        
+        # Prepare response data
+        response_data = {
             "type": "ai_message",
             "message_id": ai_message.id,
             "content": ai_response,
             "timestamp": ai_message.created_at.isoformat(),
+            "emotion_detected": emotion_data.get("primary_emotion") if emotion_data else None,
+            "confidence_score": emotion_data.get("confidence_score") if emotion_data else None,
             "tokens_used": token_usage.get("total_tokens", 0),
             "processing_time": ai_response_data.get("processing_time", 0.0),
-            "emotion_detected": emotion_data.get("primary_emotion") if emotion_data else None
-        }, chat_id)
+            "message_metadata": {
+                "model": chat_ai_model,
+                "context_used": bool(context_messages),
+                "personalization_applied": bool(user_preferences)
+            },
+            "has_voice": needs_voice_response,
+            "voice_requested": needs_voice_response
+        }
+        
+        # Generate voice response if needed
+        if needs_voice_response:
+            try:
+                # Import TTS handler from websocket_tts
+                from app.routers.websocket_tts import generate_and_send_audio
+                
+                # Generate audio asynchronously
+                asyncio.create_task(
+                    generate_and_send_audio(
+                        text=ai_response,
+                        message_id=ai_message.id,
+                        chat_id=chat_id,
+                        connection_id=connection_id,
+                        manager=manager,
+                        redis_client=redis_client,
+                        voice_settings = chat.get_voice_settings()
+                    )
+                )
+                
+                # Add voice generation status
+                response_data["voice_status"] = "generating"
+                
+            except Exception as e:
+                logger.error(f"Failed to initiate TTS: {str(e)}")
+                response_data["voice_error"] = str(e)
+        
+        # Send the text response immediately
+        await manager.send_to_chat(response_data, chat_id)
         
         processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
@@ -592,7 +637,9 @@ async def handle_chat_message(
                 "chat_id": chat_id,
                 "connection_id": connection_id,
                 "processing_time": processing_time,
-                "tokens_used": token_usage.get("total_tokens", 0)
+                "tokens_used": token_usage.get("total_tokens", 0),
+                "is_voice_message": is_voice_message,
+                "voice_response_requested": needs_voice_response
             }
         )
         
@@ -600,7 +647,8 @@ async def handle_chat_message(
             "type": "message_processed",
             "user_message_id": user_message.id,
             "ai_message_id": ai_message.id,
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "voice_requested": needs_voice_response
         }
     
     except Exception as e:
@@ -621,7 +669,6 @@ async def handle_chat_message(
             "type": "error",
             "error": "Failed to process chat message"
         }
-
 
 async def handle_typing_indicator(
     message_data: Dict[str, Any],

@@ -1,5 +1,5 @@
 // components/chat/ChatInterface.js
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MessageCircle } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import Message from './Message';
@@ -23,28 +23,8 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const messagesEndRef = useRef(null);
 
-  useEffect(() => {
-    if (activeChat) {
-      // Only fetch messages and connect WebSocket for text chats
-      // Voice chats handle their own connections
-      if (!activeChat.chat_mode || activeChat.chat_mode === 'text') {
-        fetchMessages(activeChat.id);
-        connectWebSocket(activeChat.id);
-      }
-    }
-
-    return () => {
-      // Only disconnect for text chats
-      if (!activeChat?.chat_mode || activeChat?.chat_mode === 'text') {
-        unifiedWebSocketService.disconnect();
-        enhancedAudioService.stopAll();
-      }
-    };
-  }, [activeChat]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  // Define isVoiceMode based on chat mode
+  const isVoiceMode = activeChat?.chat_mode === 'voice';
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -59,7 +39,7 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
     }
   };
 
-  const connectWebSocket = (chatId) => {
+  const connectWebSocket = useCallback((chatId) => {
     unifiedWebSocketService.connect(chatId);
 
     // Set up event listeners
@@ -95,7 +75,9 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
         created_at: data.timestamp,
         emotion_detected: data.emotion_detected,
         tokens_used: data.tokens_used,
-        message_metadata: data.message_metadata
+        message_metadata: data.message_metadata,
+        has_voice: data.has_voice,
+        voice_status: data.voice_status
       }]);
       
       if (data.emotion_detected) {
@@ -105,19 +87,37 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
         });
       }
       
-      // Handle audio response if available
-      if (data.has_audio) {
+      playNotificationSound(soundEnabled);
+    });
+
+    // Add handler for voice response ready
+    unifiedWebSocketService.on('voice_response_ready', async (data) => {
+      // Update the message to show voice is ready
+      setMessages(prev => prev.map(msg => 
+        msg.id === data.message_id 
+          ? { ...msg, voice_status: 'ready', audio_url: data.audio_url }
+          : msg
+      ));
+      
+      // Auto-play if in voice mode
+      if (isVoiceMode) {
         try {
-          const audioResponse = await apiService.synthesizeSpeech(data.content);
-          if (audioResponse.audio_data) {
-            await enhancedAudioService.playAudio(audioResponse.audio_data, 'mp3');
+          const audioResponse = await fetch(data.audio_url, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+            }
+          });
+          
+          if (audioResponse.ok) {
+            const audioData = await audioResponse.json();
+            if (audioData.audio_data) {
+              await enhancedAudioService.playAudio(audioData.audio_data, 'mp3');
+            }
           }
         } catch (error) {
-          console.error('Failed to play audio response:', error);
+          console.error('Failed to play audio:', error);
         }
       }
-      
-      playNotificationSound(soundEnabled);
     });
 
     unifiedWebSocketService.on('audioReceived', async ({ messageId, audioBlob }) => {
@@ -127,7 +127,30 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
         console.error('Failed to play received audio:', error);
       }
     });
-  };
+  }, [soundEnabled, isVoiceMode]);
+
+  useEffect(() => {
+    if (activeChat) {
+      // Only fetch messages and connect WebSocket for text chats
+      // Voice chats handle their own connections
+      if (!activeChat.chat_mode || activeChat.chat_mode === 'text') {
+        fetchMessages(activeChat.id);
+        connectWebSocket(activeChat.id);
+      }
+    }
+
+    return () => {
+      // Only disconnect for text chats
+      if (!activeChat?.chat_mode || activeChat?.chat_mode === 'text') {
+        unifiedWebSocketService.disconnect();
+        enhancedAudioService.stopAll();
+      }
+    };
+  }, [activeChat, connectWebSocket]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   const sendMessage = async (content, isVoice = false) => {
     if (!content.trim() || !activeChat) return;
@@ -211,68 +234,62 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
 
   // Render Text Chat interface (default)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <ChatHeader
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <ChatHeader 
         chat={activeChat}
-        isConnected={isConnected}
-        emotionAnalysis={emotionAnalysis}
+        onToggleSound={() => setSoundEnabled(!soundEnabled)}
         soundEnabled={soundEnabled}
-        setSoundEnabled={setSoundEnabled}
-        onToggleRAG={() => setShowRAGVisualization(!showRAGVisualization)}
+        emotionAnalysis={emotionAnalysis}
       />
-
+      
       <div style={{ 
         flex: 1, 
-        overflowY: 'auto', 
-        padding: '24px',
+        overflow: 'auto', 
+        padding: '16px 24px',
         backgroundColor: '#f9fafb'
       }}>
-        {messages.map((message) => (
-          <Message
-            key={message.id}
-            message={message}
-            onShowRAGContext={showRAGContext}
-          />
-        ))}
-        {isAiTyping && (
-          <Message
-            message={{
-              content: 'AI is typing...',
-              sender_type: 'assistant',
-              created_at: new Date().toISOString()
-            }}
-          />
+        {messages.length === 0 ? (
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            height: '100%',
+            color: '#9ca3af'
+          }}>
+            <p>Start a conversation...</p>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <Message 
+              key={message.id} 
+              message={message} 
+              onShowRAGContext={showRAGContext}
+              isVoiceMode={isVoiceMode}
+            />
+          ))
         )}
         <div ref={messagesEndRef} />
       </div>
-
-      <MessageInput
-        onSendMessage={sendMessage}
-        disabled={isAiTyping}
-      />
-
+      
       {showVoiceRecorder && (
-        <div style={{
-          position: 'absolute',
-          bottom: '80px',
-          right: '20px',
-          background: 'white',
-          padding: '20px',
-          borderRadius: '12px',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-        }}>
-          <VoiceRecorder
-            onTranscript={handleVoiceTranscript}
-            mode="push-to-talk"
-            autoSend={true}
-          />
-        </div>
+        <VoiceRecorder
+          onTranscript={handleVoiceTranscript}
+          onClose={() => setShowVoiceRecorder(false)}
+        />
       )}
-
+      
+      <MessageInput 
+        onSendMessage={sendMessage} 
+        disabled={!isConnected || isAiTyping}
+      />
+      
       {showRAGVisualization && selectedMessageId && (
         <RAGVisualization
           messageId={selectedMessageId}
-          onClose={() => setShowRAGVisualization(false)}
+          onClose={() => {
+            setShowRAGVisualization(false);
+            setSelectedMessageId(null);
+          }}
         />
       )}
     </div>

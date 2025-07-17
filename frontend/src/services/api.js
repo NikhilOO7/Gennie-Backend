@@ -67,13 +67,6 @@ class ApiService {
     return this.request('/chat');
   }
 
-  async createChat(chatData) {
-    return this.request('/chat', {
-      method: 'POST',
-      body: JSON.stringify(chatData),
-    });
-  }
-
   async deleteChat(chatId) {
     return this.request(`/chat/${chatId}`, {
       method: 'DELETE',
@@ -115,14 +108,43 @@ class ApiService {
   }
 
   async synthesizeSpeech(text, options = {}) {
-    return this.request('/voice/synthesize', {
-      method: 'POST',
-      body: JSON.stringify({
-        text,
-        return_base64: true,
-        ...options
-      }),
-    });
+    try {
+      const response = await this.request('/voice/synthesize', {
+        method: 'POST',
+        body: JSON.stringify({
+          text,
+          return_base64: true,
+          voice_name: options.voice_name || null,
+          language_code: options.language_code || 'en-US',
+          audio_format: options.audio_format || 'mp3',
+          speaking_rate: options.speaking_rate || 1.0,
+          pitch: options.pitch || 0.0,
+          ...options
+        }),
+      });
+      
+      return response;
+    } catch (error) {
+      console.error('TTS request failed:', error);
+      // Try mock endpoint as fallback
+      try {
+        const mockResponse = await this.request('/voice/synthesize', {
+          method: 'POST',
+          headers: {
+            ...this.getAuthHeaders(),
+            'X-Use-Mock': 'true'  // Signal to use mock
+          },
+          body: JSON.stringify({
+            text,
+            return_base64: true,
+            ...options
+          }),
+        });
+        return mockResponse;
+      } catch (mockError) {
+        throw error; // Throw original error
+      }
+    }
   }
 
   // Additional endpoints
@@ -177,48 +199,6 @@ class ApiService {
     });
   }
 
-  // async transcribeAudio(audioBlob, language = 'en-US') {
-  //   const formData = new FormData();
-    
-  //   // Ensure the blob has a proper filename with extension
-  //   const filename = audioBlob.type.includes('webm') ? 'recording.webm' : 'recording.wav';
-  //   formData.append('audio', audioBlob, filename);
-  //   formData.append('language_code', language);
-  //   formData.append('enable_punctuation', 'true');
-    
-  //   try {
-  //     const response = await fetch(`${this.baseURL}/voice/transcribe`, {
-  //       method: 'POST',
-  //       headers: {
-  //         ...this.getAuthHeaders(),
-  //         // Don't set Content-Type for FormData - browser will set it with boundary
-  //       },
-  //       body: formData,
-  //     });
-
-  //     if (!response.ok) {
-  //       const error = await response.json();
-  //       throw new Error(error.detail || 'Transcription failed');
-  //     }
-
-  //     const data = await response.json();
-      
-  //     // Ensure we have a transcript in the response
-  //     if (!data.transcript) {
-  //       throw new Error('No transcript in response');
-  //     }
-      
-  //     return {
-  //       transcript: data.transcript,
-  //       confidence: data.confidence || 0,
-  //       language: data.language || language,
-  //       duration: data.duration || 0
-  //     };
-  //   } catch (error) {
-  //     console.error('Transcription API error:', error);
-  //     throw error;
-  //   }
-  // }
   async transcribeAudio(audioBlob, language = 'en-US') {
     const formData = new FormData();
     

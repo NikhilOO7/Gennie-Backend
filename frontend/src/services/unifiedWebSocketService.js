@@ -345,4 +345,5 @@ class UnifiedWebSocketService {
   }
 }
 
-export default new UnifiedWebSocketService();
+const unifiedWebSocketService = new UnifiedWebSocketService();
+export default unifiedWebSocketService;

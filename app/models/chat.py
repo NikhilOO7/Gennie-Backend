@@ -17,7 +17,6 @@ from app.models.message import Message, SenderType
 class Chat(Base):
     """
     Chat model representing conversation sessions
-    FIXED: Renamed column to 'chat_metadata' to match code expectations
     """
     __tablename__ = "chats"
     
@@ -49,7 +48,7 @@ class Chat(Base):
     total_user_messages = Column(Integer, default=0, nullable=False)
     total_ai_messages = Column(Integer, default=0, nullable=False)
     
-    # Chat settings - FIXED: Changed from chat_chat_metadata to chat_metadata
+    # Chat settings and metadata - using existing field
     chat_metadata = Column(JSON, default=dict, nullable=False)
     
     # Chat context and preferences
@@ -91,10 +90,33 @@ class Chat(Base):
     )
     
     def __init__(self, **kwargs):
-        """Initialize chat with default metadata"""
-        if 'chat_metadata' not in kwargs:
-            kwargs['chat_metadata'] = {}
+        """Initialize chat with default metadata including voice settings"""
         super().__init__(**kwargs)
+        
+        # Ensure chat_metadata has default structure
+        if not self.chat_metadata:
+            self.chat_metadata = {}
+        
+        # Initialize settings within chat_metadata
+        if 'settings' not in self.chat_metadata:
+            self.chat_metadata['settings'] = {}
+        
+        # Set default voice settings if not provided
+        if 'voice_settings' not in self.chat_metadata['settings']:
+            self.chat_metadata['settings']['voice_settings'] = {
+                'voice_name': 'en-US-Neural2-C',  # Default female voice
+                'speaking_rate': 1.0,
+                'pitch': 0.0,
+                'auto_play': True
+            }
+        
+        # Set TTS enable flag based on chat mode
+        if 'enable_tts' not in self.chat_metadata['settings']:
+            self.chat_metadata['settings']['enable_tts'] = self.chat_mode == 'voice' if hasattr(self, 'chat_mode') else False
+        
+        # Mark as modified for SQLAlchemy
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(self, 'chat_metadata')
     
     def __repr__(self):
         return f"<Chat(id={self.id}, user_id={self.user_id}, title='{self.title}', messages={self.total_messages})>"
@@ -116,6 +138,80 @@ class Chat(Base):
         updated_metadata[key] = value
         self.chat_metadata = updated_metadata
     
+    def get_settings(self, key: str = None, default: Any = None) -> Any:
+        """Get settings from chat_metadata"""
+        if not self.chat_metadata:
+            return default
+        
+        settings = self.chat_metadata.get('settings', {})
+        
+        if key is None:
+            return settings
+        
+        return settings.get(key, default)
+    
+    def set_settings(self, key: str, value: Any) -> None:
+        """Set settings value in chat_metadata"""
+        if not self.chat_metadata:
+            self.chat_metadata = {}
+        
+        if 'settings' not in self.chat_metadata:
+            self.chat_metadata['settings'] = {}
+        
+        # Update the settings
+        self.chat_metadata['settings'][key] = value
+        
+        # Mark as modified for SQLAlchemy
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(self, 'chat_metadata')
+        
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def update_voice_settings(self, voice_settings: Dict[str, Any]) -> None:
+        """Update voice settings for this chat"""
+        if not self.chat_metadata:
+            self.chat_metadata = {}
+        
+        if 'settings' not in self.chat_metadata:
+            self.chat_metadata['settings'] = {}
+        
+        # Update voice settings
+        self.chat_metadata['settings']['voice_settings'] = {
+            **self.chat_metadata['settings'].get('voice_settings', {}),
+            **voice_settings
+        }
+        
+        # Mark as modified for SQLAlchemy to detect the change
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(self, 'chat_metadata')
+        
+        self.updated_at = datetime.now(timezone.utc)
+    
+    def enable_tts(self, enable: bool = True) -> None:
+        """Enable or disable TTS for this chat"""
+        self.set_settings('enable_tts', enable)
+    
+    def get_voice_settings(self) -> Dict[str, Any]:
+        """Get voice settings for this chat"""
+        settings = self.get_settings()
+        return settings.get('voice_settings', {
+            'voice_name': 'en-US-Neural2-C',
+            'speaking_rate': 1.0,
+            'pitch': 0.0,
+            'auto_play': True
+        })
+    
+    def is_voice_enabled(self) -> bool:
+        """Check if voice/TTS is enabled for this chat"""
+        # Voice is enabled if:
+        # 1. Chat mode is 'voice', OR
+        # 2. TTS is explicitly enabled in settings
+        if hasattr(self, 'chat_mode') and self.chat_mode == 'voice':
+            return True
+        
+        return self.get_settings('enable_tts', False)
+    
+    # Rest of the methods remain the same...
     def update_message_count(self, sender_type: str) -> None:
         """Update message counters"""
         self.total_messages += 1
@@ -201,7 +297,10 @@ class Chat(Base):
             "is_archived": self.is_archived,
             "is_favorite": self.is_favorite,
             "context_window_size": self.context_window_size,
-            "auto_title_generation": self.auto_title_generation
+            "auto_title_generation": self.auto_title_generation,
+            "chat_mode": self.chat_mode,
+            "voice_enabled": self.is_voice_enabled(),
+            "voice_settings": self.get_voice_settings() if self.is_voice_enabled() else None
         }
     
     def _calculate_session_duration(self) -> Optional[float]:
@@ -228,7 +327,9 @@ class Chat(Base):
                     "total_messages": self.total_messages,
                     "total_tokens_used": self.total_tokens_used,
                     "created_at": self.created_at.isoformat() if self.created_at else None,
-                    "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None
+                    "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+                    "chat_mode": self.chat_mode,
+                    "voice_enabled": self.is_voice_enabled()
                 },
                 "messages": []
             }
@@ -286,7 +387,9 @@ class Chat(Base):
         markdown += f"**AI Model:** {data['chat_info']['ai_model']}\n"
         markdown += f"**Created:** {data['chat_info']['created_at']}\n"
         markdown += f"**Total Messages:** {data['chat_info']['total_messages']}\n"
-        markdown += f"**Total Tokens:** {data['chat_info']['total_tokens_used']}\n\n"
+        markdown += f"**Total Tokens:** {data['chat_info']['total_tokens_used']}\n"
+        markdown += f"**Chat Mode:** {data['chat_info']['chat_mode']}\n"
+        markdown += f"**Voice Enabled:** {'Yes' if data['chat_info']['voice_enabled'] else 'No'}\n\n"
         
         if data['chat_info']['description']:
             markdown += f"**Description:** {data['chat_info']['description']}\n\n"
@@ -314,7 +417,9 @@ class Chat(Base):
         text += f"AI Model: {data['chat_info']['ai_model']}\n"
         text += f"Created: {data['chat_info']['created_at']}\n"
         text += f"Total Messages: {data['chat_info']['total_messages']}\n"
-        text += f"Total Tokens: {data['chat_info']['total_tokens_used']}\n\n"
+        text += f"Total Tokens: {data['chat_info']['total_tokens_used']}\n"
+        text += f"Chat Mode: {data['chat_info']['chat_mode']}\n"
+        text += f"Voice Enabled: {'Yes' if data['chat_info']['voice_enabled'] else 'No'}\n\n"
         
         if data['chat_info']['description']:
             text += f"Description: {data['chat_info']['description']}\n\n"
@@ -360,7 +465,8 @@ class Chat(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "related_topic": self.related_topic,
-            "chat_mode": self.chat_mode
+            "chat_mode": self.chat_mode,
+            "settings": self.get_settings()  # Include settings from chat_metadata
         }
         
         if include_metadata:
@@ -424,20 +530,16 @@ class Chat(Base):
     def last_activity_at(self):
         """Get last activity timestamp (returns updated_at or created_at)"""
         return self.updated_at or self.created_at
-    
-    def update_activity(self):
-        """Update the last activity timestamp"""
-        from datetime import datetime, timezone
-        self.updated_at = datetime.now(timezone.utc)
 
     @classmethod
     async def get_topic_chats(cls, db: AsyncSession, user_id: int, topic: str):
         """Get all chats related to a specific topic"""
+        from sqlalchemy import select
         result = await db.execute(
             select(cls)
             .where(cls.user_id == user_id)
             .where(cls.related_topic == topic)
             .where(cls.is_deleted == False)
-            .order_by(cls.last_activity_at.desc())
+            .order_by(cls.last_message_at.desc())
         )
         return result.scalars().all()

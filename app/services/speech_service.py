@@ -59,23 +59,44 @@ class SpeechService:
             if not encoding:
                 raise ValueError(f"Unsupported audio format: {audio_format}")
             
-            # Build recognition config
-            config = speech_v1.RecognitionConfig(
-                encoding=encoding,
-                sample_rate_hertz=sample_rate,
-                language_code=language_code,
-                enable_automatic_punctuation=kwargs.get(
-                    'enable_automatic_punctuation', 
-                    self.default_config['enable_automatic_punctuation']
-                ),
-                enable_word_time_offsets=kwargs.get(
-                    'enable_word_time_offsets',
-                    self.default_config['enable_word_time_offsets']
-                ),
-                model=kwargs.get('model', self.default_config['model']),
-                use_enhanced=kwargs.get('use_enhanced', self.default_config['use_enhanced']),
-                audio_channel_count=kwargs.get('audio_channel_count', 1),
-            )
+            # Special handling for WebM - don't specify sample rate
+            # Let Google Cloud Speech detect it from the header
+            if audio_format.lower() == 'webm':
+                # Build recognition config without sample_rate_hertz
+                config = speech_v1.RecognitionConfig(
+                    encoding=encoding,
+                    language_code=language_code,
+                    enable_automatic_punctuation=kwargs.get(
+                        'enable_automatic_punctuation', 
+                        self.default_config['enable_automatic_punctuation']
+                    ),
+                    enable_word_time_offsets=kwargs.get(
+                        'enable_word_time_offsets',
+                        self.default_config['enable_word_time_offsets']
+                    ),
+                    model=kwargs.get('model', self.default_config['model']),
+                    use_enhanced=kwargs.get('use_enhanced', self.default_config['use_enhanced']),
+                    audio_channel_count=kwargs.get('audio_channel_count', 1),
+                    # Don't specify sample_rate_hertz for WebM
+                )
+            else:
+                # For other formats, use the provided sample rate
+                config = speech_v1.RecognitionConfig(
+                    encoding=encoding,
+                    sample_rate_hertz=sample_rate,
+                    language_code=language_code,
+                    enable_automatic_punctuation=kwargs.get(
+                        'enable_automatic_punctuation', 
+                        self.default_config['enable_automatic_punctuation']
+                    ),
+                    enable_word_time_offsets=kwargs.get(
+                        'enable_word_time_offsets',
+                        self.default_config['enable_word_time_offsets']
+                    ),
+                    model=kwargs.get('model', self.default_config['model']),
+                    use_enhanced=kwargs.get('use_enhanced', self.default_config['use_enhanced']),
+                    audio_channel_count=kwargs.get('audio_channel_count', 1),
+                )
             
             # Create audio object
             audio = speech_v1.RecognitionAudio(content=audio_data)
@@ -118,7 +139,7 @@ class SpeechService:
             raise Exception(f"Google Speech API error: {str(e)}")
         except Exception as e:
             raise Exception(f"Transcription error: {str(e)}")
-    
+
     async def streaming_transcribe(
         self,
         audio_stream: AsyncGenerator[bytes, None],

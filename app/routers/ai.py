@@ -126,48 +126,96 @@ async def transcribe_audio_simple(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Simple audio transcription endpoint for voice chat
+    Audio transcription endpoint for voice chat with real transcription
     """
     try:
+        # Check if we should use mock or real service
+        use_mock = getattr(settings, 'USE_MOCK_VOICE', False)
+        
+        if use_mock:
+            # Import and use mock service
+            from app.routers.voice_mock import transcribe_audio as mock_transcribe
+            return await mock_transcribe(audio, language_code, True, False, current_user)
+        
+        # Use real transcription service
+        from app.services.speech_service import speech_service
+        
         # Read the audio file
         audio_data = await audio.read()
         logger.info(f"Received audio file: {audio.filename}, size: {len(audio_data)} bytes")
         
-        # For testing, we'll use a simple mock response
-        # In production, this would call Google Speech-to-Text or similar service
+        # Get file extension from content type if filename doesn't have one
+        file_ext = 'webm'  # Default for browser recordings
+        if audio.filename and '.' in audio.filename:
+            file_ext = audio.filename.split('.')[-1].lower()
+        elif audio.content_type:
+            type_map = {
+                'audio/webm': 'webm',
+                'audio/wav': 'wav',
+                'audio/mp3': 'mp3',
+                'audio/mpeg': 'mp3',
+                'audio/ogg': 'ogg'
+            }
+            file_ext = type_map.get(audio.content_type, 'webm')
         
-        # List of test transcriptions
-        test_phrases = [
-            "Hello, how can I help you today?",
-            "What's the weather like?",
-            "Tell me something interesting",
-            "I need help with a problem",
-            "Can you explain how this works?",
-            "Thank you for your assistance",
-            "What do you recommend?",
-            "That's very helpful",
-            "I have a question",
-            "Please tell me more"
-        ]
+        # Validate audio
+        validation = await speech_service.validate_audio(audio_data, file_ext)
+        if not validation['valid']:
+            logger.error(f"Audio validation failed: {validation.get('error')}")
+            raise HTTPException(
+                status_code=400,
+                detail=validation.get('error', 'Invalid audio format')
+            )
         
-        import random
-        transcript = random.choice(test_phrases)
+        # Use the correct sample rate for WebM audio
+        # WebM from browsers typically uses 48000 Hz
+        sample_rate = 48000 if file_ext == 'webm' else validation.get('sample_rate', 16000)
         
-        # Return transcription result
+        logger.info(f"Using sample rate: {sample_rate} Hz for {file_ext} audio")
+        
+        # Perform transcription
+        result = await speech_service.transcribe_audio(
+            audio_data=audio_data,
+            audio_format=file_ext,
+            language_code=language_code,
+            enable_automatic_punctuation=True,
+            sample_rate=sample_rate  # Use the correct sample rate
+        )
+        
         return {
             "success": True,
-            "transcript": transcript,
-            "confidence": 0.95,
-            "language": language_code,
-            "duration": 2.0
+            "transcript": result['transcript'],
+            "confidence": result.get('confidence', 0.95),
+            "language": result.get('language', language_code),
+            "duration": result.get('duration', 0)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Transcription error: {str(e)}", exc_info=True)
+        
+        # Fallback to mock if real service fails in development
+        if settings.ENVIRONMENT == "development":
+            logger.warning("Falling back to mock transcription due to error")
+            from app.routers.voice_mock import MOCK_TRANSCRIPTIONS
+            import random
+            
+            return {
+                "success": True,
+                "transcript": random.choice(MOCK_TRANSCRIPTIONS),
+                "confidence": 0.95,
+                "language": language_code,
+                "duration": 2.5,
+                "_mock": True,
+                "_error": str(e)
+            }
+        
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to transcribe audio"
+            status_code=500,
+            detail=f"Transcription failed: {str(e)}"
         )
+
 @router.post("/voice/synthesize")
 async def synthesize_speech(
     request: TTSRequest,
@@ -202,6 +250,78 @@ async def synthesize_speech(
             detail=f"Mock synthesis failed: {str(e)}"
         )
 
+@router.get("/message-audio/{message_id}")
+async def get_message_audio(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis)
+):
+    """Get audio for a specific message"""
+    try:
+        # Verify message belongs to user
+        result = await db.execute(
+            select(Message)
+            .join(Chat)
+            .where(
+                and_(
+                    Message.id == message_id,
+                    Chat.user_id == current_user.id
+                )
+            )
+        )
+        message = result.scalar_one_or_none()
+        
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        
+        # Check Redis cache first
+        audio_data = None
+        if redis_client:
+            audio_key = f"audio:message:{message_id}"
+            audio_data = await redis_client.get(audio_key)
+        
+        if audio_data:
+            return {
+                "success": True,
+                "audio_data": audio_data,
+                "format": "mp3",
+                "cached": True
+            }
+        
+        # Generate on demand if not cached
+        from app.services.tts_service import tts_service
+        
+        result = await tts_service.synthesize_speech(
+            text=message.content,
+            audio_format="mp3"
+        )
+        
+        audio_base64 = base64.b64encode(result['audio_content']).decode()
+        
+        # Cache for next time
+        if redis_client:
+            await redis_client.set(
+                f"audio:message:{message_id}",
+                audio_base64,
+                ex=3600
+            )
+        
+        return {
+            "success": True,
+            "audio_data": audio_base64,
+            "format": "mp3",
+            "cached": False
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get message audio: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve audio"
+        )
 
 def transform_simple_preferences_to_personalization_format(simple_prefs: Dict[str, Any]) -> Dict[str, Any]:
     """Transform simple database preferences to personalization service format"""
@@ -658,7 +778,6 @@ async def chat_with_ai(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while processing your request"
         )
-
 
 # Helper functions
 async def _stream_chat_response(

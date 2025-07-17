@@ -369,6 +369,72 @@ async def handle_audio_response_request(websocket: WebSocket, user: User, data: 
         
     await send_audio_response(websocket, user, text, message_id, voice_name)
 
+async def generate_and_send_audio(
+    text: str,
+    message_id: int,
+    chat_id: int,
+    connection_id: str,
+    manager,
+    redis_client,
+    voice_settings: Optional[Dict] = None
+):
+    """Generate and send audio response asynchronously"""
+    try:
+        from app.services.tts_service import tts_service
+        
+        # Extract voice settings with defaults
+        voice_name = None
+        speaking_rate = 1.0
+        pitch = 0.0
+        
+        if voice_settings:
+            voice_name = voice_settings.get("voice_name")
+            speaking_rate = voice_settings.get("speaking_rate", 1.0)
+            pitch = voice_settings.get("pitch", 0.0)
+        
+        logger.info(f"Generating audio for message {message_id} with voice {voice_name}")
+        
+        # Generate audio
+        result = await tts_service.synthesize_speech(
+            text=text,
+            voice_name=voice_name,
+            audio_format="mp3",
+            speaking_rate=speaking_rate,
+            pitch=pitch
+        )
+        
+        # Store in Redis
+        if redis_client:
+            audio_key = f"audio:message:{message_id}"
+            audio_base64 = base64.b64encode(result['audio_content']).decode()
+            await redis_client.set(audio_key, audio_base64, ex=3600)  # Expire in 1 hour
+            logger.info(f"Cached audio for message {message_id} in Redis")
+        
+        # Estimate audio duration
+        duration = tts_service.estimate_audio_duration(text, speaking_rate)
+        
+        # Send audio ready notification
+        await manager.send_to_chat({
+            "type": "voice_response_ready",
+            "message_id": message_id,
+            "audio_format": "mp3",
+            "voice_name": result.get("voice_name"),
+            "duration": duration,
+            "audio_url": f"/api/v1/ai/message-audio/{message_id}"
+        }, chat_id)
+        
+        logger.info(f"Voice response ready for message {message_id}, duration: {duration}s")
+        
+    except Exception as e:
+        logger.error(f"TTS generation failed for message {message_id}: {str(e)}", exc_info=True)
+        
+        # Send error notification
+        await manager.send_to_chat({
+            "type": "voice_response_error",
+            "message_id": message_id,
+            "error": str(e)
+        }, chat_id)
+
 async def send_audio_response(
     websocket: WebSocket,
     user: User,

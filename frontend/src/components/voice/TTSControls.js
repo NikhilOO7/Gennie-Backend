@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import AudioPlayer from './AudioPlayer';
 import apiService from '../../services/api';
 
@@ -18,19 +18,8 @@ const TTSControls = ({
   const [voices, setVoices] = useState([]);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   
-  useEffect(() => {
-    if (showVoiceSelector) {
-      fetchVoices();
-    }
-  }, [showVoiceSelector]);
-  
-  useEffect(() => {
-    if (autoPlay && text) {
-      handlePlayClick();
-    }
-  }, [text, autoPlay]);
-  
-  const fetchVoices = async () => {
+  // Define fetchVoices with useCallback
+  const fetchVoices = useCallback(async () => {
     try {
       const data = await apiService.getVoices();
       setVoices(data.voices || []);
@@ -45,9 +34,47 @@ const TTSControls = ({
     } catch (error) {
       console.error('Error fetching voices:', error);
     }
+  }, [selectedVoice, onVoiceChange]);
+  
+  // Helper functions for cache
+  const getCachedAudioUrl = (text, voice) => {
+    const cacheKey = `tts_${btoa(text + voice).substring(0, 20)}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    return cached ? JSON.parse(cached).url : null;
   };
   
-  const handlePlayClick = async () => {
+  const cacheAudioUrl = (text, voice, url) => {
+    const cacheKey = `tts_${btoa(text + voice).substring(0, 20)}`;
+    sessionStorage.setItem(cacheKey, JSON.stringify({
+      url: url,
+      timestamp: Date.now(),
+    }));
+    
+    // Clean old cache entries
+    cleanCache();
+  };
+  
+  const cleanCache = () => {
+    const maxAge = 3600000; // 1 hour
+    const now = Date.now();
+    
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith('tts_')) {
+        try {
+          const item = JSON.parse(sessionStorage.getItem(key));
+          if (now - item.timestamp > maxAge) {
+            sessionStorage.removeItem(key);
+          }
+        } catch {
+          sessionStorage.removeItem(key);
+        }
+      }
+    }
+  };
+  
+  // Define handlePlayClick with useCallback
+  const handlePlayClick = useCallback(async () => {
     if (isPlaying || !text) return;
     
     // Check cache first
@@ -82,7 +109,21 @@ const TTSControls = ({
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isPlaying, text, selectedVoice, playbackSpeed]);
+  
+  // useEffect for fetching voices
+  useEffect(() => {
+    if (showVoiceSelector) {
+      fetchVoices();
+    }
+  }, [showVoiceSelector, fetchVoices]);
+  
+  // useEffect for auto play
+  useEffect(() => {
+    if (autoPlay && text) {
+      handlePlayClick();
+    }
+  }, [text, autoPlay, handlePlayClick]);
   
   const handleVoiceChange = (e) => {
     const newVoice = e.target.value;
@@ -112,42 +153,6 @@ const TTSControls = ({
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    }
-  };
-  
-  const getCachedAudioUrl = (text, voice) => {
-    const cacheKey = `tts_${btoa(text + voice).substring(0, 20)}`;
-    const cached = sessionStorage.getItem(cacheKey);
-    return cached ? JSON.parse(cached).url : null;
-  };
-  
-  const cacheAudioUrl = (text, voice, url) => {
-    const cacheKey = `tts_${btoa(text + voice).substring(0, 20)}`;
-    sessionStorage.setItem(cacheKey, JSON.stringify({
-      url: url,
-      timestamp: Date.now(),
-    }));
-    
-    // Clean old cache entries
-    cleanCache();
-  };
-  
-  const cleanCache = () => {
-    const maxAge = 3600000; // 1 hour
-    const now = Date.now();
-    
-    for (let i = sessionStorage.length - 1; i >= 0; i--) {
-      const key = sessionStorage.key(i);
-      if (key && key.startsWith('tts_')) {
-        try {
-          const item = JSON.parse(sessionStorage.getItem(key));
-          if (now - item.timestamp > maxAge) {
-            sessionStorage.removeItem(key);
-          }
-        } catch {
-          sessionStorage.removeItem(key);
-        }
-      }
     }
   };
   

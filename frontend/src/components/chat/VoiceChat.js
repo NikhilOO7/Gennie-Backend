@@ -106,33 +106,82 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
         created_at: data.timestamp,
         emotion_detected: data.emotion_detected,
         tokens_used: data.tokens_used,
-        message_metadata: data.message_metadata
+        message_metadata: data.message_metadata,
+        has_voice: data.has_voice,
+        voice_status: data.voice_status,
+        voice_requested: data.voice_requested
       };
       
       setMessages(prev => [...prev, aiMessage]);
       
-      // Play audio response
-      if (data.has_audio || activeChat?.settings?.enable_tts) {
-        try {
-          setVoiceStatus('AI is speaking...');
-          setVoiceSubStatus('');
-          
-          const audioResponse = await apiService.synthesizeSpeech(data.content);
-          if (audioResponse.audio_data) {
-            await enhancedAudioService.playAudio(audioResponse.audio_data, 'mp3');
-          }
-        } catch (error) {
-          console.error('Failed to play audio response:', error);
-        }
-      }
+      // Play notification sound
+      playNotificationSound(soundEnabled);
       
-      // Reset status
+      // Don't auto-play here, wait for voice_response_ready event
+      if (data.has_voice) {
+        setVoiceStatus('AI is preparing voice response...');
+        setVoiceSubStatus('');
+      }
+    });
+
+    // Add handler for voice response ready
+    registerEventListener('voice_response_ready', async (data) => {
+      console.log('Voice response ready:', data);
+      
+      // Update the message to show voice is ready
+      setMessages(prev => prev.map(msg => 
+        msg.id === data.message_id 
+          ? { ...msg, voice_status: 'ready', audio_url: data.audio_url }
+          : msg
+      ));
+      
+      // Auto-play voice response
+      try {
+        setVoiceStatus('AI is speaking...');
+        setVoiceSubStatus('');
+        
+        const audioResponse = await fetch(data.audio_url, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+          }
+        });
+        
+        if (audioResponse.ok) {
+          const audioData = await audioResponse.json();
+          if (audioData.audio_data) {
+            await enhancedAudioService.playAudio(audioData.audio_data, 'mp3');
+            
+            // After playing, reset status
+            setTimeout(() => {
+              setVoiceStatus('Ready to Listen');
+              setVoiceSubStatus('Press and hold the button to speak');
+            }, 1000);
+          }
+        } else {
+          throw new Error('Failed to fetch audio');
+        }
+      } catch (error) {
+        console.error('Failed to play audio response:', error);
+        setVoiceStatus('Failed to play response');
+        setVoiceSubStatus('Please try again');
+        
+        setTimeout(() => {
+          setVoiceStatus('Ready to Listen');
+          setVoiceSubStatus('Press and hold the button to speak');
+        }, 2000);
+      }
+    });
+
+    // Add voice error handler
+    registerEventListener('voice_response_error', (data) => {
+      console.error('Voice response error:', data);
+      setVoiceStatus('Voice generation failed');
+      setVoiceSubStatus('Response available as text');
+      
       setTimeout(() => {
         setVoiceStatus('Ready to Listen');
         setVoiceSubStatus('Press and hold the button to speak');
-      }, 1000);
-      
-      playNotificationSound(soundEnabled);
+      }, 2000);
     });
 
     registerEventListener('error', (error) => {
@@ -147,7 +196,7 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
       setVoiceStatus('Connection Failed');
       setVoiceSubStatus('Unable to establish connection');
     });
-  }, [registerEventListener, activeChat, soundEnabled]);
+  }, [soundEnabled, registerEventListener]);
 
   // Initialize WebSocket connection and fetch messages
   useEffect(() => {
@@ -216,7 +265,7 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
       unifiedWebSocketService.disconnect();
       enhancedAudioService.stopAll();
     };
-  }, [activeChat, cleanupEventListeners]);
+  }, [activeChat, cleanupEventListeners, setupEventListeners, isConnected]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -293,23 +342,29 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
       return;
     }
 
-    // Send message through WebSocket as a regular chat message
+    // Send message through WebSocket with voice response request
     try {
       if (unifiedWebSocketService.isConnected) {
         unifiedWebSocketService.send({
           type: 'chat_message',
           content: transcript,
           detect_emotion: true,
+          request_voice_response: true,  // Explicitly request voice response
           metadata: {
             source: 'voice',
-            transcribed: true
+            transcribed: true,
+            original_audio_size: audioBlob ? audioBlob.size : 0
           }
         });
+        
+        setVoiceStatus('AI is thinking...');
+        setVoiceSubStatus('Preparing response');
       } else {
         // Fallback to REST API
         const data = await apiService.sendMessage(transcript, activeChat.id, {
           is_voice: true,
-          enable_tts: true
+          enable_tts: true,
+          request_voice_response: true
         });
         
         // Handle response manually if not connected
@@ -328,11 +383,6 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
     }
     
     setIsProcessing(false);
-    
-    setTimeout(() => {
-      setVoiceStatus('Ready to Listen');
-      setVoiceSubStatus('Press and hold the button to speak');
-    }, 1000);
   };
 
   const handleError = (error) => {
@@ -416,6 +466,7 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
                 key={message.id || index}
                 message={message}
                 isLast={index === messages.length - 1}
+                isVoiceMode={true}
               />
             ))
           )}

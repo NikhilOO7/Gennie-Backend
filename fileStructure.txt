@@ -34,6 +34,7 @@
 │   │   ├── health.py
 │   │   ├── users.py
 │   │   ├── voice.py
+│   │   ├── voice_mock.py
 │   │   ├── websocket.py
 │   │   └── websocket_tts.py
 │   ├── schemas.py
@@ -88,7 +89,9 @@
 │       │   │   ├── ChatInterface.js
 │       │   │   ├── Message.js
 │       │   │   ├── MessageInput.js
-│       │   │   └── NewChatModal.js
+│       │   │   ├── NewChatModal.js
+│       │   │   ├── VoiceChat.css
+│       │   │   └── VoiceChat.js
 │       │   ├── dashboard
 │       │   │   ├── Dashboard.js
 │       │   │   └── Sidebar.js
@@ -137,6 +140,7 @@
 │   ├── setup_database.sh
 │   ├── setup_migrations.py
 │   └── test_gcp.py
+├── test_gemini.py
 └── tests
     ├── __init__.py
     ├── integration
@@ -144,4 +148,4 @@
     └── unit
         └── __init__.py
 
-37 directories, 108 files
+37 directories, 112 files

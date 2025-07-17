@@ -1,5 +1,8 @@
+from app import logger
+from app.config import settings
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request, status, Body
 from typing import Optional, List, Dict, Any
 import io
 import base64
@@ -121,31 +124,60 @@ async def transcribe_base64_audio(
             detail=f"Transcription failed: {str(e)}"
         )
 
+# In app/routers/voice.py, update the synthesize endpoint:
+
 @router.post("/synthesize")
 async def synthesize_speech(
-    text: str,
-    voice_name: Optional[str] = None,
-    language_code: Optional[str] = None,
-    audio_format: str = "mp3",
-    speaking_rate: float = 1.0,
-    pitch: float = 0.0,
-    return_base64: bool = False,
+    request: Request,
+    text: str = Body(...),
+    voice_name: Optional[str] = Body(None),
+    language_code: Optional[str] = Body("en-US"),
+    audio_format: str = Body("mp3"),
+    speaking_rate: float = Body(1.0),
+    pitch: float = Body(0.0),
+    return_base64: bool = Body(True),
     current_user: User = Depends(get_current_user)
 ):
     """
     Convert text to speech
-    
-    Args:
-        text: Text to synthesize
-        voice_name: Voice selection
-        language_code: Language code
-        audio_format: Output format (mp3, wav, ogg)
-        speaking_rate: Speed (0.25-4.0)
-        pitch: Pitch adjustment (-20.0 to 20.0)
-        return_base64: Return as base64 string instead of audio stream
     """
     try:
-        # Synthesize speech
+        # Check if we should use mock
+        use_mock = request.headers.get("X-Use-Mock", "false").lower() == "true"
+        use_mock = use_mock or getattr(settings, 'USE_MOCK_VOICE', False)
+        
+        if use_mock:
+            # Use mock TTS
+            logger.info("Using mock TTS service")
+            
+            # Generate mock audio (silent audio or beep)
+            import base64
+            
+            # Create a simple beep sound or use pre-recorded audio
+            # For now, return a base64 encoded string of silence
+            mock_audio_data = b'\x00' * 1000  # Simple silence
+            
+            if return_base64:
+                return {
+                    "success": True,
+                    "audio_data": base64.b64encode(mock_audio_data).decode(),
+                    "audio_format": audio_format,
+                    "voice_name": voice_name or "mock-voice",
+                    "text_hash": str(hash(text)),
+                    "_mock": True
+                }
+            else:
+                audio_io = io.BytesIO(mock_audio_data)
+                return StreamingResponse(
+                    audio_io,
+                    media_type=f'audio/{audio_format}',
+                    headers={
+                        'Content-Disposition': f'inline; filename="speech.{audio_format}"',
+                        'X-Mock': 'true'
+                    }
+                )
+        
+        # Use real TTS service
         result = await tts_service.synthesize_speech(
             text=text,
             voice_name=voice_name,
@@ -161,9 +193,9 @@ async def synthesize_speech(
             return {
                 "success": True,
                 "audio_data": audio_base64,
-                "audio_format": result['audio_format'],
-                "voice_name": result['voice_name'],
-                "text_hash": result['text_hash'],
+                "audio_format": result.get('audio_format', audio_format),
+                "voice_name": result.get('voice_name', voice_name),
+                "text_hash": result.get('text_hash', str(hash(text))),
             }
         else:
             # Return audio stream
@@ -182,12 +214,32 @@ async def synthesize_speech(
                 media_type=content_type,
                 headers={
                     'Content-Disposition': f'inline; filename="speech.{audio_format}"',
-                    'X-Voice-Name': result['voice_name'],
-                    'X-Text-Hash': result['text_hash'],
+                    'X-Voice-Name': result.get('voice_name', ''),
+                    'X-Text-Hash': result.get('text_hash', ''),
                 }
             )
             
     except Exception as e:
+        logger.error(f"Speech synthesis failed: {str(e)}", exc_info=True)
+        
+        # Try fallback to mock if real TTS fails
+        if not use_mock and settings.ENVIRONMENT == "development":
+            logger.warning("Falling back to mock TTS due to error")
+            
+            # Simple mock response
+            import base64
+            mock_audio_data = b'\x00' * 1000
+            
+            return {
+                "success": True,
+                "audio_data": base64.b64encode(mock_audio_data).decode(),
+                "audio_format": audio_format,
+                "voice_name": "mock-voice-fallback",
+                "text_hash": str(hash(text)),
+                "_mock": True,
+                "_error": str(e)
+            }
+        
         raise HTTPException(
             status_code=500,
             detail=f"Speech synthesis failed: {str(e)}"
