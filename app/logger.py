@@ -421,9 +421,13 @@ def trace(self, message, *args, **kwargs):
 # Add trace method to Logger class
 logging.Logger.trace = trace
 
+logger = logging.getLogger(__name__)
+
+setup_logging()
 
 # Export public interface
 __all__ = [
+    "logger",
     "setup_logging",
     "get_logger",
     "LogContext",

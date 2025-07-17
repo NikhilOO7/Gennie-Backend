@@ -1,0 +1,51 @@
+# service.yaml
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: chatbot-backend
+  annotations:
+    run.googleapis.com/launch-stage: BETA
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:chatbot-postgres
+        run.googleapis.com/vpc-connector: chatbot-connector
+        run.googleapis.com/vpc-egress: all-traffic
+    spec:
+      serviceAccountName: chatbot-service-account@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+      - image: gcr.io/PROJECT_ID/chatbot-backend
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://chatbot_user:$(DB_PASSWORD)@/chatbot_db?host=/cloudsql/PROJECT_ID:REGION:chatbot-postgres
+        - name: REDIS_URL
+          value: redis://REDIS_HOST:6379/0
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: SECRET_KEY
+              key: latest
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: JWT_SECRET_KEY
+              key: latest
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: GEMINI_API_KEY
+              key: latest
+        - name: ENVIRONMENT
+          value: production
+        - name: PORT
+          value: "8080"
+        resources:
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+          requests:
+            cpu: "1"
+            memory: "512Mi"

@@ -8,7 +8,7 @@ import uuid
 import io
 import struct
 from sqlalchemy import select
-
+from app.logger import logger
 from app.routers.auth import verify_token
 from app.models.user import User
 from app.services.gemini_service import gemini_service

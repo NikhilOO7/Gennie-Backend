@@ -1,0 +1,25 @@
+# .gcloudignore
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.env
+.env.*
+venv/
+env/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+*.log
+logs/
+data/
+docker-compose*.yml
+Dockerfile.dev
+.dockerignore
+tests/
+docs/
+README.md
+*.md
+frontend/

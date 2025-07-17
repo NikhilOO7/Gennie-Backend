@@ -1,5 +1,6 @@
-from app import logger
+from app.logger import logger
 from app.config import settings
+from app.routers.voice_utils import generate_beep_wav
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi import FastAPI, Request, status, Body
@@ -14,7 +15,8 @@ from app.services.tts_service import tts_service
 from app.routers.auth import get_current_user
 from app.models import User
 
-router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
+
+router = APIRouter(tags=["voice"])
 
 @router.post("/transcribe")
 async def transcribe_audio(
@@ -124,8 +126,6 @@ async def transcribe_base64_audio(
             detail=f"Transcription failed: {str(e)}"
         )
 
-# In app/routers/voice.py, update the synthesize endpoint:
-
 @router.post("/synthesize")
 async def synthesize_speech(
     request: Request,
@@ -139,30 +139,33 @@ async def synthesize_speech(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Convert text to speech
+    Synthesize text to speech
+    
+    Args:
+        text: Text to synthesize
+        voice_name: Voice identifier (optional)
+        language_code: Language code
+        audio_format: Output audio format (mp3, wav, ogg)
+        speaking_rate: Speaking rate (0.25 to 4.0)
+        pitch: Voice pitch (-20.0 to 20.0 semitones)
+        return_base64: Return audio as base64 instead of streaming
     """
     try:
-        # Check if we should use mock
-        use_mock = request.headers.get("X-Use-Mock", "false").lower() == "true"
-        use_mock = use_mock or getattr(settings, 'USE_MOCK_VOICE', False)
+        # Check for mock header
+        use_mock = request.headers.get('X-Use-Mock', '').lower() == 'true'
         
-        if use_mock:
-            # Use mock TTS
-            logger.info("Using mock TTS service")
-            
-            # Generate mock audio (silent audio or beep)
-            import base64
-            
-            # Create a simple beep sound or use pre-recorded audio
-            # For now, return a base64 encoded string of silence
-            mock_audio_data = b'\x00' * 1000  # Simple silence
+        if use_mock or (settings.ENVIRONMENT == "development" and not settings.GOOGLE_CLOUD_PROJECT_ID):
+            logger.warning("Using mock TTS service")
+            # Simple mock response
+            # mock_audio_data = b'\x00' * 1000  # Silent audio
+            mock_audio_data = generate_beep_wav(frequency=440, duration_ms=200)
             
             if return_base64:
                 return {
                     "success": True,
                     "audio_data": base64.b64encode(mock_audio_data).decode(),
                     "audio_format": audio_format,
-                    "voice_name": voice_name or "mock-voice",
+                    "voice_name": "mock-voice",
                     "text_hash": str(hash(text)),
                     "_mock": True
                 }
@@ -170,14 +173,14 @@ async def synthesize_speech(
                 audio_io = io.BytesIO(mock_audio_data)
                 return StreamingResponse(
                     audio_io,
-                    media_type=f'audio/{audio_format}',
+                    media_type="audio/mpeg",
                     headers={
                         'Content-Disposition': f'inline; filename="speech.{audio_format}"',
-                        'X-Mock': 'true'
+                        'X-Mock-Response': 'true'
                     }
                 )
         
-        # Use real TTS service
+        # Real TTS service
         result = await tts_service.synthesize_speech(
             text=text,
             voice_name=voice_name,
@@ -193,25 +196,22 @@ async def synthesize_speech(
             return {
                 "success": True,
                 "audio_data": audio_base64,
-                "audio_format": result.get('audio_format', audio_format),
-                "voice_name": result.get('voice_name', voice_name),
-                "text_hash": result.get('text_hash', str(hash(text))),
+                "audio_format": result['audio_format'],
+                "voice_name": result.get('voice_name', ''),
+                "text_hash": result.get('text_hash', ''),
             }
         else:
-            # Return audio stream
+            # Stream audio response
             audio_io = io.BytesIO(result['audio_content'])
-            
-            # Set appropriate content type
             content_types = {
                 'mp3': 'audio/mpeg',
                 'wav': 'audio/wav',
                 'ogg': 'audio/ogg',
             }
-            content_type = content_types.get(audio_format, 'audio/mpeg')
             
             return StreamingResponse(
                 audio_io,
-                media_type=content_type,
+                media_type=content_types.get(audio_format, 'audio/mpeg'),
                 headers={
                     'Content-Disposition': f'inline; filename="speech.{audio_format}"',
                     'X-Voice-Name': result.get('voice_name', ''),

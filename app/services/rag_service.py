@@ -31,7 +31,7 @@ class RAGService:
     
     def __init__(self):
         """Initialize RAG service"""
-        self.embeddings_model = "textembedding-gecko"  # Gemini embeddings model
+        self.embeddings_model = "text-embedding-004"  # Gemini embeddings model
         self.embeddings_dimension = 768  # Gemini embeddings dimension
         self.max_context_messages = 20
         self.relevance_threshold = 0.7
@@ -223,8 +223,9 @@ class RAGService:
                     return np.frombuffer(cached, dtype=np.float32)
             
             # Generate new embedding using the Gemini service
+            # Fix: Changed 'texts' parameter to 'text' (singular)
             embedding_result = await gemini_service.generate_embeddings(
-                texts=message,
+                text=message,  # Changed from texts=message
                 model=self.embeddings_model
             )
             
@@ -242,10 +243,10 @@ class RAGService:
             
             # Cache the embedding
             if redis_client:
-                await redis_client.setex(
+                await redis_client.set(
                     cache_key,
-                    self.embedding_cache_ttl,
-                    embedding_array.tobytes()
+                    embedding_array.tobytes(),
+                    ex=self.cache_ttl
                 )
             
             return embedding_array
@@ -253,7 +254,7 @@ class RAGService:
         except Exception as e:
             logger.error(f"Failed to get message embedding: {str(e)}")
             return None
-    
+
     async def find_similar_conversations(
         self,
         query: str,
