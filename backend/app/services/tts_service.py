@@ -29,6 +29,25 @@ class TTSService:
             'wav': texttospeech.AudioEncoding.LINEAR16,
             'ogg': texttospeech.AudioEncoding.OGG_OPUS,
         }
+
+        self.warm_up_model()
+
+    async def warm_up_model(self):
+        """Pre-warm the model to reduce first-call latency"""
+        try:
+            await self.synthesize_speech("Hello", voice_name=self.default_voice['name'])
+        except:
+            pass
+    
+    async def synthesize_speech_streaming(self, text: str, voice_name: str = None):
+        """Stream TTS output for lower latency"""
+        # Split text into smaller chunks
+        chunks = self._split_text_for_streaming(text)
+        
+        for chunk in chunks:
+            # Process each chunk immediately
+            result = await self.synthesize_speech(chunk, voice_name)
+            yield result['audio_content']
     
     async def synthesize_speech(
         self,

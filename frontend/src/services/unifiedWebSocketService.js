@@ -1,6 +1,39 @@
 // services/unifiedWebSocketService.js
 import audioStreamingUtils from '../utils/audioStreamingUtils';
 
+class OptimizedVoiceService {
+    constructor() {
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        this.audioQueue = [];
+        this.isPlaying = false;
+    }
+    
+    // Pre-buffer audio chunks
+    async bufferAudioChunk(audioData) {
+        const audioBuffer = await this.audioContext.decodeAudioData(audioData);
+        this.audioQueue.push(audioBuffer);
+        
+        if (!this.isPlaying) {
+            this.playNextChunk();
+        }
+    }
+    
+    async playNextChunk() {
+        if (this.audioQueue.length === 0) {
+            this.isPlaying = false;
+            return;
+        }
+        
+        this.isPlaying = true;
+        const buffer = this.audioQueue.shift();
+        const source = this.audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.audioContext.destination);
+        source.onended = () => this.playNextChunk();
+        source.start();
+    }
+}
+
 class UnifiedWebSocketService {
   constructor() {
     this.ws = null;

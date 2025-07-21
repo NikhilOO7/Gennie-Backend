@@ -255,15 +255,36 @@ async def get_message_audio(
     message_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    redis_client = Depends(get_redis)
+    redis_client: Redis = Depends(get_redis)
 ):
     """Get audio for a specific message"""
     try:
-        # Verify message belongs to user
+        # Log the request for debugging
+        logger.info(f"Audio request for message {message_id} by user {current_user.id}")
+        
+        # First check Redis cache
+        audio_key = f"audio:message:{message_id}"
+        cached_audio = None
+        
+        if redis_client:
+            try:
+                cached_audio = await redis_client.get(audio_key)
+                if cached_audio:
+                    logger.info(f"Found cached audio for message {message_id}")
+            except Exception as e:
+                logger.warning(f"Redis error: {e}")
+        
+        if cached_audio:
+            # Return the cached audio (already base64 encoded)
+            return {
+                "success": True,
+                "audio_data": cached_audio.decode() if isinstance(cached_audio, bytes) else cached_audio,
+                "source": "cache"
+            }
+        
+        # If not in cache, check database
         result = await db.execute(
-            select(Message)
-            .join(Chat)
-            .where(
+            select(Message).join(Chat).where(
                 and_(
                     Message.id == message_id,
                     Chat.user_id == current_user.id
@@ -273,55 +294,96 @@ async def get_message_audio(
         message = result.scalar_one_or_none()
         
         if not message:
-            raise HTTPException(status_code=404, detail="Message not found")
-        
-        # Check Redis cache first
-        audio_data = None
-        if redis_client:
-            audio_key = f"audio:message:{message_id}"
-            audio_data = await redis_client.get(audio_key)
-        
-        if audio_data:
-            return {
-                "success": True,
-                "audio_data": audio_data,
-                "format": "mp3",
-                "cached": True
-            }
-        
-        # Generate on demand if not cached
-        from app.services.tts_service import tts_service
-        
-        result = await tts_service.synthesize_speech(
-            text=message.content,
-            audio_format="mp3"
-        )
-        
-        audio_base64 = base64.b64encode(result['audio_content']).decode()
-        
-        # Cache for next time
-        if redis_client:
-            await redis_client.set(
-                f"audio:message:{message_id}",
-                audio_base64,
-                ex=3600
+            logger.warning(f"Message {message_id} not found for user {current_user.id}")
+            raise HTTPException(
+                status_code=404,
+                detail="Message not found or access denied"
             )
         
-        return {
-            "success": True,
-            "audio_data": audio_base64,
-            "format": "mp3",
-            "cached": False
-        }
+        # Check if message has stored audio data in metadata
+        if message.message_metadata and isinstance(message.message_metadata, dict):
+            audio_data = message.message_metadata.get("audio_data")
+            if audio_data:
+                logger.info(f"Found audio in message metadata for message {message_id}")
+                return {
+                    "success": True,
+                    "audio_data": audio_data,
+                    "source": "database"
+                }
+        
+        # If no audio found but message exists, try to generate it
+        if message.sender_type != SenderType.AI or not message.content:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot generate audio for this message type"
+            )
+        
+        logger.info(f"Generating audio on-demand for message {message_id}")
+        
+        # Import here to avoid circular imports
+        from app.services.tts_service import tts_service
+        
+        # Generate audio with error handling
+        try:
+            result = await tts_service.synthesize_speech(
+                text=message.content,
+                audio_format="mp3"
+            )
+            
+            if not result or not result.get('audio_content'):
+                raise ValueError("TTS service returned empty result")
+            
+            audio_base64 = base64.b64encode(result['audio_content']).decode()
+            
+            # Cache for future use
+            if redis_client:
+                try:
+                    await redis_client.set(audio_key, audio_base64, ex=3600)
+                    logger.info(f"Cached generated audio for message {message_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to cache audio: {e}")
+            
+            # Update message metadata to store audio
+            if not message.message_metadata:
+                message.message_metadata = {}
+            message.message_metadata['audio_data'] = audio_base64
+            message.message_metadata['audio_generated_at'] = datetime.now(timezone.utc).isoformat()
+            
+            # Mark the column as modified for SQLAlchemy
+            flag_modified(message, "message_metadata")
+            await db.commit()
+            
+            return {
+                "success": True,
+                "audio_data": audio_base64,
+                "source": "generated"
+            }
+            
+        except Exception as tts_error:
+            logger.error(f"TTS generation failed: {str(tts_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate audio: {str(tts_error)}"
+            )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get message audio: {str(e)}")
+        logger.error(f"Failed to get message audio: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Failed to retrieve audio"
+            detail=f"Internal server error: {str(e)}"
         )
+
+@router.get("/debug/routes")
+async def debug_routes(current_user: User = Depends(get_current_user)):
+    """Debug endpoint to check available routes"""
+    return {
+        "audio_endpoint": "/api/v1/ai/message-audio/{message_id}",
+        "available": True,
+        "user_id": current_user.id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 def transform_simple_preferences_to_personalization_format(simple_prefs: Dict[str, Any]) -> Dict[str, Any]:
     """Transform simple database preferences to personalization service format"""

@@ -226,8 +226,6 @@ async def synthesize_speech(
         if not use_mock and settings.ENVIRONMENT == "development":
             logger.warning("Falling back to mock TTS due to error")
             
-            # Simple mock response
-            import base64
             mock_audio_data = b'\x00' * 1000
             
             return {

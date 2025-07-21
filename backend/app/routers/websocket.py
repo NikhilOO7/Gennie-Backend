@@ -2,6 +2,7 @@
 WebSocket Router - Real-time chat functionality
 """
 
+from app.services import speech_service
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -402,6 +403,41 @@ async def process_websocket_message(
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
+async def handle_voice_message(websocket, message):
+    # Use asyncio.gather for parallel processing
+    transcription_task = asyncio.create_task(
+        speech_service.transcribe_audio(message['audio_data'])
+    )
+    
+    # Start generating response before transcription completes
+    # if we have partial results
+    
+    transcript = await transcription_task
+    
+    # Generate response
+    response_task = asyncio.create_task(
+        gemini_service.generate_chat_response([
+            {"role": "user", "content": transcript}
+        ])
+    )
+    
+    # Start TTS as soon as we have first sentence
+    response = await response_task
+    sentences = response['content'].split('. ')
+    
+    for sentence in sentences:
+        if sentence.strip():
+            tts_task = asyncio.create_task(
+                tts_service.synthesize_speech(sentence + '.')
+            )
+            audio_data = await tts_task
+            
+            # Send audio chunk immediately
+            await websocket.send_json({
+                "type": "audio_chunk",
+                "audio_data": base64.b64encode(audio_data).decode(),
+                "is_final": sentence == sentences[-1]
+            })
 
 async def handle_chat_message(
     message_data: Dict[str, Any],

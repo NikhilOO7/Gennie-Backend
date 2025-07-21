@@ -198,6 +198,94 @@ const VoiceChat = ({ activeChat, chats, setChats }) => {
     });
   }, [soundEnabled, registerEventListener]);
 
+  registerEventListener('voice_response_ready', async (data) => {
+    console.log('Voice response ready:', data);
+    
+    // Update the message to show voice is ready
+    setMessages(prev => prev.map(msg => 
+      msg.id === data.message_id 
+        ? { ...msg, voice_status: 'ready', audio_url: data.audio_url }
+        : msg
+    ));
+    
+    // Auto-play voice response
+    if (data.audio_url) {
+      try {
+        setVoiceStatus('AI is speaking...');
+        setVoiceSubStatus('');
+        
+        // Build the full URL
+        const baseUrl = window.location.origin;
+        const audioUrl = data.audio_url.startsWith('http') 
+          ? data.audio_url 
+          : `${baseUrl}${data.audio_url}`;
+        
+        console.log('Fetching audio from:', audioUrl);
+        
+        const audioResponse = await fetch(audioUrl, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+            'Accept': 'application/json',
+          },
+          credentials: 'include'
+        });
+        
+        console.log('Audio response status:', audioResponse.status);
+        console.log('Audio response headers:', audioResponse.headers);
+        
+        if (!audioResponse.ok) {
+          // Check if we got HTML instead of JSON
+          const contentType = audioResponse.headers.get('content-type');
+          if (contentType && contentType.includes('text/html')) {
+            console.error('Received HTML instead of JSON - endpoint not found');
+            throw new Error('Audio endpoint not found (404)');
+          }
+          
+          // Try to get error details
+          let errorDetail = `HTTP ${audioResponse.status}`;
+          try {
+            const errorData = await audioResponse.json();
+            errorDetail = errorData.detail || errorDetail;
+          } catch (e) {
+            // Couldn't parse as JSON
+          }
+          
+          throw new Error(errorDetail);
+        }
+        
+        const audioData = await audioResponse.json();
+        console.log('Audio data received:', { 
+          success: audioData.success, 
+          source: audioData.source,
+          hasData: !!audioData.audio_data 
+        });
+        
+        if (audioData.success && audioData.audio_data) {
+          // Play the audio
+          await enhancedAudioService.playAudio(audioData.audio_data, 'mp3');
+          
+          // After playing, reset status
+          setTimeout(() => {
+            setVoiceStatus('Ready to Listen');
+            setVoiceSubStatus('Press and hold the button to speak');
+          }, 1000);
+        } else {
+          throw new Error('No audio data in response');
+        }
+      } catch (error) {
+        console.error('Failed to play audio response:', error);
+        setVoiceStatus('Failed to play response');
+        setVoiceSubStatus(error.message || 'Please try again');
+        
+        setTimeout(() => {
+          setVoiceStatus('Ready to Listen');
+          setVoiceSubStatus('Press and hold the button to speak');
+        }, 2000);
+      }
+    }
+  });
+
   // Initialize WebSocket connection and fetch messages
   useEffect(() => {
     let mounted = true;

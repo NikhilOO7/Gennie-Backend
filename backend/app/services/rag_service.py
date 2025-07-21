@@ -37,6 +37,7 @@ class RAGService:
         self.relevance_threshold = 0.7
         self.time_decay_factor = 0.95
         self.embedding_cache_ttl = 3600  # 1 hour
+        self.cache_ttl = 3600
         
         logger.info("RAG service initialized")
     

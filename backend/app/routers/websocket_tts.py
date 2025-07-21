@@ -383,14 +383,9 @@ async def generate_and_send_audio(
         from app.services.tts_service import tts_service
         
         # Extract voice settings with defaults
-        voice_name = None
-        speaking_rate = 1.0
-        pitch = 0.0
-        
-        if voice_settings:
-            voice_name = voice_settings.get("voice_name")
-            speaking_rate = voice_settings.get("speaking_rate", 1.0)
-            pitch = voice_settings.get("pitch", 0.0)
+        voice_name = voice_settings.get("voice_name") if voice_settings else None
+        speaking_rate = voice_settings.get("speaking_rate", 1.0) if voice_settings else 1.0
+        pitch = voice_settings.get("pitch", 0.0) if voice_settings else 0.0
         
         logger.info(f"Generating audio for message {message_id} with voice {voice_name}")
         
@@ -403,22 +398,28 @@ async def generate_and_send_audio(
             pitch=pitch
         )
         
-        # Store in Redis
+        if not result.get('audio_content'):
+            raise ValueError("No audio content generated")
+        
+        # Store in Redis with proper base64 encoding
         if redis_client:
-            audio_key = f"audio:message:{message_id}"
-            audio_base64 = base64.b64encode(result['audio_content']).decode()
-            await redis_client.set(audio_key, audio_base64, ex=3600)  # Expire in 1 hour
-            logger.info(f"Cached audio for message {message_id} in Redis")
+            try:
+                audio_key = f"audio:message:{message_id}"
+                audio_base64 = base64.b64encode(result['audio_content']).decode()
+                await redis_client.set(audio_key, audio_base64, ex=3600)  # Expire in 1 hour
+                logger.info(f"Cached audio for message {message_id} in Redis")
+            except Exception as e:
+                logger.error(f"Failed to cache audio: {e}")
         
         # Estimate audio duration
-        duration = tts_service.estimate_audio_duration(text, speaking_rate)
+        duration = getattr(tts_service, 'estimate_audio_duration', lambda t, r: len(t) * 0.06)(text, speaking_rate)
         
-        # Send audio ready notification
+        # Send audio ready notification with correct URL format
         await manager.send_to_chat({
             "type": "voice_response_ready",
             "message_id": message_id,
             "audio_format": "mp3",
-            "voice_name": result.get("voice_name"),
+            "voice_name": result.get("voice_name", voice_name),
             "duration": duration,
             "audio_url": f"/api/v1/ai/message-audio/{message_id}"
         }, chat_id)
