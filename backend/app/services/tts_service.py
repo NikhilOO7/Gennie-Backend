@@ -59,6 +59,7 @@ class TTSService:
         pitch: float = 0.0,
         volume_gain_db: float = 0.0,
         enable_ssml: bool = False,
+        use_human_ssml: bool = True,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -83,7 +84,12 @@ class TTSService:
                 voice_name = self.default_voice['name']
             if not language_code:
                 language_code = voice_name.split('-')[0] + '-' + voice_name.split('-')[1]
-            
+
+            # Use SSML for bot responses to add human touch
+            if use_human_ssml:
+                text = self.create_ssml_with_breaks(text, break_time="400ms")
+                enable_ssml = True
+
             # Build synthesis input
             if enable_ssml:
                 synthesis_input = texttospeech.SynthesisInput(ssml=text)

@@ -303,6 +303,32 @@ class GeminiService:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
+    def get_human_system_prompt(self):
+        """Return a system prompt for human-like, empathetic conversation."""
+        return (
+            "You are a friendly, empathetic assistant. Respond in a conversational, human-like manner. "
+            "Show understanding, use natural language, and add emotional nuance. "
+            "If the user seems upset, offer comfort. If the user is happy, celebrate with them. "
+            "Avoid robotic or generic responses."
+        )
+
+    def build_system_prompt(self, user_preferences: Optional[Dict[str, Any]] = None) -> str:
+        """Build a system prompt that includes human touch and user preferences."""
+        base_prompt = self.get_human_system_prompt()
+        if user_preferences:
+            # Example: Merge preferences into prompt
+            pref_parts = []
+            if 'tone' in user_preferences:
+                pref_parts.append(f"Preferred tone: {user_preferences['tone']}")
+            if 'interests' in user_preferences:
+                interests = ', '.join(user_preferences['interests']) if isinstance(user_preferences['interests'], list) else user_preferences['interests']
+                pref_parts.append(f"User interests: {interests}")
+            if 'style' in user_preferences:
+                pref_parts.append(f"Preferred style: {user_preferences['style']}")
+            if pref_parts:
+                base_prompt += "\n" + " ".join(pref_parts)
+        return base_prompt
+
     async def generate_chat_response(
         self,
         messages: List[Dict[str, str]],
@@ -311,6 +337,7 @@ class GeminiService:
         top_p: Optional[float] = None,
         stream: bool = False,
         model: Optional[str] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Union[Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
         """
@@ -323,14 +350,19 @@ class GeminiService:
             top_p: Top-p sampling parameter
             stream: Whether to stream the response
             model: Model to use (optional)
+            user_preferences: User preferences for response style, tone, etc.
             **kwargs: Additional parameters
             
         Returns:
             Response dictionary or async generator for streaming
         """
         start_time = datetime.now(timezone.utc)
-        
         try:
+            # Inject human-like system prompt with user preferences if not present
+            if not any(m.get("role") == "system" for m in messages):
+                system_prompt = self.build_system_prompt(user_preferences)
+                messages = [{"role": "system", "content": system_prompt}] + messages
+            
             # Convert messages to a simple prompt string (like test script)
             prompt = self._convert_messages_to_contents(messages)
             system_instruction = self._extract_system_instruction(messages)
