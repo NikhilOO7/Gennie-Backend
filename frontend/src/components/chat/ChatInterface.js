@@ -1,14 +1,15 @@
 // components/chat/ChatInterface.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MessageCircle } from 'lucide-react';
+import { MessageCircle, Mic, Keyboard } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import Message from './Message';
 import MessageInput from './MessageInput';
 import VoiceChat from './VoiceChat';
+import EnhancedVoiceInterface from '../voice/EnhancedVoiceInterface';
 import VoiceRecorder from '../voice/VoiceRecorder';
 import RAGVisualization from '../rag/RAGVisualization';
 import apiService from '../../services/api';
-import unifiedWebSocketService from '../../services/unifiedWebSocketService';
+import unifiedWebSocketService from '../../services/UnifiedWebSocketService';
 import enhancedAudioService from '../../services/enhancedAudioService';
 import { playNotificationSound } from '../../utils/helpers';
 
@@ -21,10 +22,16 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
   const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [inputMode, setInputMode] = useState('text'); // 'text', 'voice', 'enhanced-voice'
+  const [connectionError, setConnectionError] = useState(false);
   const messagesEndRef = useRef(null);
+  const connectionTimeoutRef = useRef(null);
+  const eventListenersSetupRef = useRef(false);
 
-  // Define isVoiceMode based on chat mode
-  const isVoiceMode = activeChat?.chat_mode === 'voice';
+  // Define isVoiceMode based on chat mode or current input mode
+  const isVoiceMode = activeChat?.chat_mode === 'voice' || inputMode === 'voice' || inputMode === 'enhanced-voice';
+  const isEnhancedVoiceMode = inputMode === 'enhanced-voice' || activeChat?.chat_mode === 'enhanced-voice';
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -39,259 +46,487 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
     }
   };
 
-  const connectWebSocket = useCallback((chatId) => {
-    unifiedWebSocketService.connect(chatId);
-
-    // Set up event listeners
-    unifiedWebSocketService.on('connected', () => {
-      setIsConnected(true);
-    });
-
-    unifiedWebSocketService.on('disconnected', () => {
-      setIsConnected(false);
-      setIsAiTyping(false);
-    });
-
-    unifiedWebSocketService.on('user_message', (data) => {
-      setMessages(prev => [...prev, {
-        id: data.message_id,
-        content: data.content,
-        sender_type: 'user',
-        created_at: data.timestamp,
-        user_id: data.user_id
-      }]);
-    });
-
-    unifiedWebSocketService.on('ai_typing', (data) => {
-      setIsAiTyping(data.is_typing);
-    });
-
-    unifiedWebSocketService.on('ai_message', async (data) => {
-      setIsAiTyping(false);
-      setMessages(prev => [...prev, {
-        id: data.message_id,
-        content: data.content,
-        sender_type: 'assistant',
-        created_at: data.timestamp,
-        emotion_detected: data.emotion_detected,
-        tokens_used: data.tokens_used,
-        message_metadata: data.message_metadata,
-        has_voice: data.has_voice,
-        voice_status: data.voice_status
-      }]);
-      
-      if (data.emotion_detected) {
-        setEmotionAnalysis({
-          emotion: data.emotion_detected,
-          confidence: data.confidence_score || 0.95
-        });
-      }
-      
-      playNotificationSound(soundEnabled);
-    });
-
-    // Add handler for voice response ready
-    unifiedWebSocketService.on('voice_response_ready', async (data) => {
-      // Update the message to show voice is ready
-      setMessages(prev => prev.map(msg => 
-        msg.id === data.message_id 
-          ? { ...msg, voice_status: 'ready', audio_url: data.audio_url }
-          : msg
-      ));
-      
-      // Auto-play if in voice mode
-      if (isVoiceMode) {
-        try {
-          const audioResponse = await fetch(data.audio_url, {
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-            }
-          });
-          
-          if (audioResponse.ok) {
-            const audioData = await audioResponse.json();
-            if (audioData.audio_data) {
-              await enhancedAudioService.playAudio(audioData.audio_data, 'mp3');
-            }
-          }
-        } catch (error) {
-          console.error('Failed to play audio:', error);
-        }
-      }
-    });
-
-    unifiedWebSocketService.on('audioReceived', async ({ messageId, audioBlob }) => {
-      try {
-        await enhancedAudioService.playAudio(audioBlob);
-      } catch (error) {
-        console.error('Failed to play received audio:', error);
-      }
-    });
-  }, [soundEnabled, isVoiceMode]);
-
-  useEffect(() => {
-    if (activeChat) {
-      // Only fetch messages and connect WebSocket for text chats
-      // Voice chats handle their own connections
-      if (!activeChat.chat_mode || activeChat.chat_mode === 'text') {
-        fetchMessages(activeChat.id);
-        connectWebSocket(activeChat.id);
-      }
+  // Clean up event listeners
+  const cleanupEventListeners = useCallback(() => {
+    if (eventListenersSetupRef.current) {
+      console.log('Cleaning up WebSocket event listeners');
+      unifiedWebSocketService.off('connected', handleConnected);
+      unifiedWebSocketService.off('disconnected', handleDisconnected);
+      unifiedWebSocketService.off('user_message', handleUserMessage);
+      unifiedWebSocketService.off('ai_message_start', handleAiMessageStart);
+      unifiedWebSocketService.off('ai_message_chunk', handleAiMessageChunk);
+      unifiedWebSocketService.off('ai_message_complete', handleAiMessageComplete);
+      unifiedWebSocketService.off('emotion_detected', handleEmotionDetected);
+      unifiedWebSocketService.off('rag_context', handleRagContext);
+      unifiedWebSocketService.off('error', handleWebSocketError);
+      eventListenersSetupRef.current = false;
     }
+  }, []);
 
-    return () => {
-      // Only disconnect for text chats
-      if (!activeChat?.chat_mode || activeChat?.chat_mode === 'text') {
-        unifiedWebSocketService.disconnect();
-        enhancedAudioService.stopAll();
+  // WebSocket event handlers
+  const handleConnected = useCallback(() => {
+    console.log('WebSocket connected');
+    setIsConnected(true);
+    setConnectionError(false);
+    
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current);
+      connectionTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handleDisconnected = useCallback((data) => {
+    console.log('WebSocket disconnected:', data);
+    setIsConnected(false);
+    setIsAiTyping(false);
+    
+    // Only show error if it wasn't a normal closure
+    if (data?.code !== 1000) {
+      setConnectionError(true);
+    }
+  }, []);
+
+  const handleUserMessage = useCallback((data) => {
+    console.log('User message received:', data);
+    setMessages(prev => [...prev, {
+      id: data.message_id,
+      content: data.content,
+      sender: 'user',
+      timestamp: new Date().toISOString(),
+      audio_url: data.audio_url || null,
+      emotion: data.emotion || null
+    }]);
+  }, []);
+
+  const handleAiMessageStart = useCallback(() => {
+    console.log('AI message start');
+    setIsAiTyping(true);
+  }, []);
+
+  const handleAiMessageChunk = useCallback((data) => {
+    console.log('AI message chunk:', data);
+    setMessages(prev => {
+      const lastMessage = prev[prev.length - 1];
+      if (lastMessage && lastMessage.sender === 'ai' && lastMessage.isStreaming) {
+        return prev.map((msg, index) => 
+          index === prev.length - 1 
+            ? { ...msg, content: msg.content + data.content }
+            : msg
+        );
+      } else {
+        return [...prev, {
+          id: data.message_id || Date.now(),
+          content: data.content,
+          sender: 'ai',
+          timestamp: new Date().toISOString(),
+          isStreaming: true,
+          emotion: data.emotion || null
+        }];
       }
-    };
-  }, [activeChat, connectWebSocket]);
+    });
+  }, []);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  const handleAiMessageComplete = useCallback((data) => {
+    console.log('AI message complete:', data);
+    setIsAiTyping(false);
+    setMessages(prev => 
+      prev.map(msg => 
+        msg.isStreaming ? { ...msg, isStreaming: false, audio_url: data.audio_url } : msg
+      )
+    );
+    
+    if (soundEnabled && data.audio_url) {
+      playNotificationSound();
+    }
+  }, [soundEnabled]);
 
-  const sendMessage = async (content, isVoice = false) => {
-    if (!content.trim() || !activeChat) return;
+  const handleEmotionDetected = useCallback((data) => {
+    console.log('Emotion detected:', data);
+    setEmotionAnalysis(data);
+  }, []);
+
+  const handleRagContext = useCallback((data) => {
+    console.log('RAG context received:', data);
+    if (data.sources && data.sources.length > 0) {
+      setShowRAGVisualization(true);
+    }
+  }, []);
+
+  const handleWebSocketError = useCallback((data) => {
+    console.error('WebSocket error:', data);
+    setIsAiTyping(false);
+    setConnectionError(true);
+  }, []);
+
+  // Set up event listeners
+  const setupEventListeners = useCallback(() => {
+    if (!eventListenersSetupRef.current) {
+      console.log('Setting up WebSocket event listeners');
+      
+      unifiedWebSocketService.on('connected', handleConnected);
+      unifiedWebSocketService.on('disconnected', handleDisconnected);
+      unifiedWebSocketService.on('user_message', handleUserMessage);
+      unifiedWebSocketService.on('ai_message_start', handleAiMessageStart);
+      unifiedWebSocketService.on('ai_message_chunk', handleAiMessageChunk);
+      unifiedWebSocketService.on('ai_message_complete', handleAiMessageComplete);
+      unifiedWebSocketService.on('emotion_detected', handleEmotionDetected);
+      unifiedWebSocketService.on('rag_context', handleRagContext);
+      unifiedWebSocketService.on('error', handleWebSocketError);
+      
+      eventListenersSetupRef.current = true;
+    }
+  }, [
+    handleConnected,
+    handleDisconnected,
+    handleUserMessage,
+    handleAiMessageStart,
+    handleAiMessageChunk,
+    handleAiMessageComplete,
+    handleEmotionDetected,
+    handleRagContext,
+    handleWebSocketError
+  ]);
+
+  const connectWebSocket = useCallback(async (chatId) => {
+    try {
+      // Set up event listeners first
+      setupEventListeners();
+      
+      // Set connection timeout
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
+      
+      connectionTimeoutRef.current = setTimeout(() => {
+        if (!isConnected) {
+          console.error('WebSocket connection timeout');
+          setConnectionError(true);
+        }
+      }, 10000);
+
+      // Connect to WebSocket
+      console.log('Connecting to WebSocket for chat:', chatId);
+      await unifiedWebSocketService.connect(chatId);
+      
+    } catch (error) {
+      console.error('Failed to connect WebSocket:', error);
+      setConnectionError(true);
+      setIsConnected(false);
+    }
+  }, [setupEventListeners, isConnected]);
+
+  // Handle voice transcript from enhanced voice interface
+  const handleVoiceTranscript = useCallback(async (transcript, audioData) => {
+    if (!transcript.trim()) return;
+
+    console.log('Voice transcript received:', transcript);
 
     try {
-      if (unifiedWebSocketService.isConnected) {
-        unifiedWebSocketService.sendChatMessage(content);
-      } else {
-        // Fallback to REST API
-        const data = await apiService.sendMessage(content, activeChat.id);
+      // Add user message to UI immediately
+      const userMessage = {
+        id: Date.now(),
+        content: transcript,
+        sender: 'user',
+        timestamp: new Date().toISOString(),
+        audio_data: audioData,
+        isVoice: true
+      };
+      
+      setMessages(prev => [...prev, userMessage]);
+
+      // Send via WebSocket with audio data
+      if (unifiedWebSocketService.isConnected()) {
+        const success = unifiedWebSocketService.send({
+          type: 'voice_message',
+          content: transcript,
+          audio_data: audioData,
+          chat_id: activeChat.id,
+          include_emotion: true,
+          include_rag: true
+        });
         
-        setMessages(prev => [
-          ...prev,
-          {
-            id: Date.now(),
-            content: content,
-            sender_type: 'user',
-            created_at: new Date().toISOString()
-          },
-          {
-            id: data.message_id || Date.now() + 1,
-            content: data.response || data.content,
-            sender_type: 'assistant',
-            created_at: data.timestamp || new Date().toISOString(),
-            emotion_detected: data.emotion_analysis?.primary_emotion,
-            tokens_used: data.token_usage?.total_tokens,
-            message_metadata: data.metadata
-          }
-        ]);
-        
-        if (data.emotion_analysis) {
-          setEmotionAnalysis({
-            emotion: data.emotion_analysis.primary_emotion,
-            confidence: data.emotion_analysis.confidence || 0.95
-          });
+        if (!success) {
+          console.warn('Failed to send voice message via WebSocket');
         }
-        playNotificationSound(soundEnabled);
+      } else {
+        console.warn('WebSocket not connected, cannot send voice message');
+      }
+    } catch (error) {
+      console.error('Failed to send voice message:', error);
+    }
+  }, [activeChat]);
+
+  // Handle audio response from enhanced voice interface
+  const handleAudioResponse = useCallback((audioData) => {
+    // Audio response is handled by the WebSocket events
+    console.log('Audio response received:', audioData);
+  }, []);
+
+  // Toggle between input modes
+  const toggleInputMode = () => {
+    const modes = ['text', 'voice', 'enhanced-voice'];
+    const currentIndex = modes.indexOf(inputMode);
+    const nextIndex = (currentIndex + 1) % modes.length;
+    setInputMode(modes[nextIndex]);
+  };
+
+  // Handle regular text message
+  const handleSendMessage = async (content, attachments = []) => {
+    if (!content.trim() && attachments.length === 0) return;
+
+    try {
+      const messageData = {
+        content: content.trim(),
+        attachments,
+        chat_id: activeChat.id
+      };
+
+      if (unifiedWebSocketService.isConnected()) {
+        const success = unifiedWebSocketService.send({
+          type: 'message',
+          ...messageData
+        });
+        
+        if (!success) {
+          console.warn('Failed to send message via WebSocket, falling back to HTTP');
+          // Fallback to HTTP API
+          const response = await apiService.sendMessage(activeChat.id, messageData);
+          fetchMessages(activeChat.id);
+        }
+      } else {
+        console.warn('WebSocket not connected, using HTTP API');
+        // Fallback to HTTP API
+        const response = await apiService.sendMessage(activeChat.id, messageData);
+        fetchMessages(activeChat.id);
       }
     } catch (error) {
       console.error('Failed to send message:', error);
     }
   };
 
-  const handleVoiceTranscript = (transcript, audioBlob) => {
-    if (transcript) {
-      sendMessage(transcript, true);
+  // Retry connection
+  const retryConnection = useCallback(async () => {
+    if (activeChat) {
+      setConnectionError(false);
+      await connectWebSocket(activeChat.id);
     }
-  };
+  }, [activeChat, connectWebSocket]);
 
-  const showRAGContext = (messageId) => {
-    setSelectedMessageId(messageId);
-    setShowRAGVisualization(true);
-  };
+  // Initialize chat
+  useEffect(() => {
+    let mounted = true;
+
+    const initializeChat = async () => {
+      if (!activeChat) return;
+
+      try {
+        // Clean up previous listeners
+        cleanupEventListeners();
+        
+        // Fetch messages first
+        await fetchMessages(activeChat.id);
+        
+        if (!mounted) return;
+        
+        // Connect WebSocket
+        await connectWebSocket(activeChat.id);
+        
+        // Set input mode based on chat mode
+        if (activeChat.chat_mode === 'voice') {
+          setInputMode('enhanced-voice');
+        } else {
+          setInputMode('text');
+        }
+      } catch (error) {
+        console.error('Failed to initialize chat:', error);
+        if (mounted) {
+          setConnectionError(true);
+        }
+      }
+    };
+
+    initializeChat();
+
+    return () => {
+      mounted = false;
+      cleanupEventListeners();
+      
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      
+      // Only disconnect if we're changing chats, not unmounting entirely
+      if (activeChat) {
+        unifiedWebSocketService.disconnect();
+      }
+    };
+  }, [activeChat, connectWebSocket, cleanupEventListeners]);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   if (!activeChat) {
     return (
-      <div style={{ 
-        flex: 1, 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center',
-        backgroundColor: '#f9fafb'
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <MessageCircle size={64} color="#e5e7eb" />
-          <h3 style={{ marginTop: '16px', color: '#6b7280' }}>
-            No Chat Selected
+      <div className="flex-1 flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <MessageCircle size={64} className="mx-auto text-gray-400 mb-4" />
+          <h3 className="text-xl font-semibold text-gray-700 mb-2">
+            Select a chat to start messaging
           </h3>
-          <p style={{ marginTop: '8px', color: '#9ca3af' }}>
-            Choose a chat from the sidebar or create a new one
+          <p className="text-gray-500">
+            Choose a conversation from the sidebar or create a new one.
           </p>
         </div>
       </div>
     );
   }
 
-  // Render Voice Chat interface if chat mode is voice
-  if (activeChat.chat_mode === 'voice') {
-    return <VoiceChat activeChat={activeChat} chats={chats} setChats={setChats} />;
-  }
-
-  // Render Text Chat interface (default)
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div className="flex-1 flex flex-col bg-white">
+      {/* Header */}
       <ChatHeader 
         chat={activeChat}
-        onToggleSound={() => setSoundEnabled(!soundEnabled)}
+        isConnected={isConnected}
         soundEnabled={soundEnabled}
-        emotionAnalysis={emotionAnalysis}
+        setSoundEnabled={setSoundEnabled}
+        showRAGVisualization={showRAGVisualization}
+        setShowRAGVisualization={setShowRAGVisualization}
+        inputMode={inputMode}
+        onToggleInputMode={toggleInputMode}
       />
-      
-      <div style={{ 
-        flex: 1, 
-        overflow: 'auto', 
-        padding: '16px 24px',
-        backgroundColor: '#f9fafb'
-      }}>
-        {messages.length === 0 ? (
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'center', 
-            alignItems: 'center', 
-            height: '100%',
-            color: '#9ca3af'
-          }}>
-            <p>Start a conversation...</p>
+
+      {/* Connection Error Banner */}
+      {connectionError && (
+        <div className="px-4 py-2 bg-red-50 border-b border-red-200 text-red-700 text-sm flex items-center justify-between">
+          <span>⚠️ Connection lost. Some features may not work properly.</span>
+          <button
+            onClick={retryConnection}
+            className="ml-2 px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.map((message) => (
+          <Message
+            key={message.id}
+            message={message}
+            onMessageSelect={setSelectedMessageId}
+            selectedMessageId={selectedMessageId}
+            showRAGVisualization={showRAGVisualization}
+          />
+        ))}
+        
+        {isAiTyping && (
+          <div className="flex justify-start">
+            <div className="bg-gray-100 rounded-lg px-4 py-2 max-w-xs">
+              <div className="flex space-x-1">
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></div>
+                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></div>
+              </div>
+            </div>
           </div>
-        ) : (
-          messages.map((message) => (
-            <Message 
-              key={message.id} 
-              message={message} 
-              onShowRAGContext={showRAGContext}
-              isVoiceMode={isVoiceMode}
-            />
-          ))
         )}
+        
         <div ref={messagesEndRef} />
       </div>
-      
-      {showVoiceRecorder && (
-        <VoiceRecorder
-          onTranscript={handleVoiceTranscript}
-          onClose={() => setShowVoiceRecorder(false)}
+
+      {/* RAG Visualization */}
+      {showRAGVisualization && (
+        <RAGVisualization 
+          messageId={selectedMessageId} 
+          onClose={() => setShowRAGVisualization(false)}
         />
       )}
-      
-      <MessageInput 
-        onSendMessage={sendMessage} 
-        disabled={!isConnected || isAiTyping}
-      />
-      
-      {showRAGVisualization && selectedMessageId && (
-        <RAGVisualization
-          messageId={selectedMessageId}
-          onClose={() => {
-            setShowRAGVisualization(false);
-            setSelectedMessageId(null);
-          }}
-        />
+
+      {/* Emotion Analysis Display */}
+      {emotionAnalysis && (
+        <div className="px-4 py-2 bg-blue-50 border-t border-blue-200 text-sm">
+          <span className="font-medium text-blue-800">
+            Emotion detected: {emotionAnalysis.primary_emotion} 
+            ({Math.round(emotionAnalysis.confidence * 100)}% confidence)
+          </span>
+        </div>
       )}
+
+      {/* Input Area - Conditional rendering based on mode */}
+      <div className="border-t bg-white">
+        {/* Input Mode Toggle */}
+        <div className="px-4 py-2 border-b bg-gray-50 flex items-center justify-between">
+          <div className="flex items-center space-x-2 text-sm text-gray-600">
+            <span>Input mode:</span>
+            <span className="font-medium">
+              {inputMode === 'text' && 'Text'}
+              {inputMode === 'voice' && 'Voice (Basic)'}
+              {inputMode === 'enhanced-voice' && 'Voice (Enhanced)'}
+            </span>
+            {!isConnected && (
+              <span className="text-red-500 text-xs">
+                (Some features disabled - connection lost)
+              </span>
+            )}
+          </div>
+          <button
+            onClick={toggleInputMode}
+            className="flex items-center space-x-1 px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+          >
+            {inputMode === 'text' && <Keyboard size={16} />}
+            {(inputMode === 'voice' || inputMode === 'enhanced-voice') && <Mic size={16} />}
+            <span>Switch Mode</span>
+          </button>
+        </div>
+
+        {/* Text Input */}
+        {inputMode === 'text' && (
+          <MessageInput 
+            onSendMessage={handleSendMessage}
+            disabled={!isConnected && !connectionError} // Allow sending via HTTP when disconnected
+          />
+        )}
+
+        {/* Basic Voice Input */}
+        {inputMode === 'voice' && (
+          <div className="p-4">
+            <VoiceRecorder
+              onTranscript={(transcript) => handleSendMessage(transcript)}
+              onError={(error) => console.error('Voice recording error:', error)}
+              language="en-US"
+              autoSend={true}
+              disabled={false} // Basic voice input doesn't require WebSocket
+            />
+            <div className="text-xs text-gray-500 text-center mt-2">
+              Click and hold to record. Basic voice recognition.
+            </div>
+          </div>
+        )}
+
+        {/* Enhanced Voice Input */}
+        {inputMode === 'enhanced-voice' && (
+          <div className="p-4">
+            <EnhancedVoiceInterface
+              onTranscript={handleVoiceTranscript}
+              onAudioResponse={handleAudioResponse}
+              isConnected={isConnected}
+              className="enhanced-voice-mode"
+            />
+            <div className="text-xs text-gray-500 text-center mt-2">
+              Enhanced voice interface with real-time streaming, emotion detection, and quality improvements.
+              {!isConnected && (
+                <span className="text-red-500 block">
+                  Connection required for full functionality. Some features may be limited.
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

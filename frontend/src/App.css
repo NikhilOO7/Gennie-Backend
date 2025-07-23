@@ -528,3 +528,76 @@ button:active:not(:disabled) {
   background-color: #4f46e5;
   color: white;
 }
+
+
+/* Mobile Voice Interface Optimizations */
+@media (max-width: 768px) {
+  .voice-interface {
+    padding: 1rem;
+    height: calc(100vh - 140px);
+  }
+  
+  .voice-recorder-button {
+    width: 70px;
+    height: 70px;
+    font-size: 1.5rem;
+  }
+  
+  .voice-visualizer {
+    width: 280px;
+    height: 80px;
+  }
+  
+  .voice-controls {
+    gap: 0.5rem;
+  }
+  
+  .chat-container {
+    height: calc(100vh - 120px);
+    padding: 0.5rem;
+  }
+  
+  .message {
+    max-width: 85%;
+    font-size: 0.9rem;
+  }
+}
+
+/* Touch-friendly interactions */
+@media (hover: none) and (pointer: coarse) {
+  .button, .control-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  .voice-recorder-button {
+    min-height: 60px;
+    min-width: 60px;
+  }
+  
+  /* Larger touch targets */
+  .chat-item {
+    padding: 1rem;
+    min-height: 60px;
+  }
+}
+
+/* Better readability on mobile */
+@media (max-width: 480px) {
+  .sidebar {
+    width: 100%;
+    height: 100%;
+  }
+  
+  .main-content {
+    margin-left: 0;
+  }
+  
+  .chat-header {
+    padding: 0.75rem 1rem;
+  }
+  
+  .message-input {
+    padding: 0.75rem 1rem;
+  }
+}
