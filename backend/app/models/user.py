@@ -55,6 +55,7 @@ class User(Base):
     
     # User settings (JSON field for flexible settings)
     settings = Column(JSON, default=dict, nullable=False)
+    voice_preferences = Column(JSON, default=dict, nullable=False)
     
     # Timestamps
     created_at = Column(
@@ -147,6 +148,13 @@ class User(Base):
             raise ValueError("Password does not meet requirements")
         
         self.password_hash = pwd_context.hash(password)
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """
+        Hash a password
+        """
+        return pwd_context.hash(password)
     
     def verify_password(self, password: str) -> bool:
         """

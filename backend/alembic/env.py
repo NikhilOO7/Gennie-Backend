@@ -21,7 +21,7 @@ config = context.config
 
 # Set the database URL to the synchronous version
 # Convert async URL to sync URL for migrations
-sync_db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+sync_db_url = "postgresql://postgres:password@localhost:5432/chatbot_db"
 config.set_main_option("sqlalchemy.url", sync_db_url)
 
 # Interpret the config file for Python logging

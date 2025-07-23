@@ -286,38 +286,24 @@ async def get_available_voices(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get list of available voices
-    
-    Args:
-        language_code: Filter by language code
+    Get list of available voices from the TTS service.
     """
     try:
-        if tts_service is None:
-            raise HTTPException(status_code=503, detail="TTS service not available")
-        
-        if hasattr(tts_service, 'get_voices'):
-            voices = await tts_service.get_voices(language_code)
-        else:
-            # Fallback voice list
-            voices = [
-                {"name": "en-US-Neural2-F", "language_code": "en-US", "ssml_gender": "FEMALE"},
-                {"name": "en-US-Neural2-D", "language_code": "en-US", "ssml_gender": "MALE"},
-                {"name": "en-US-Neural2-H", "language_code": "en-US", "ssml_gender": "FEMALE"},
-                {"name": "en-US-Neural2-J", "language_code": "en-US", "ssml_gender": "MALE"},
-            ]
+        if not tts_service or not hasattr(tts_service, 'get_voices'):
+            raise HTTPException(status_code=503, detail="TTS service or get_voices method is not available")
+
+        voices = await tts_service.get_voices(language_code=language_code)
         
         return {
             "voices": voices,
             "total": len(voices),
             "language_filter": language_code,
-            "enhanced": ENHANCED_SERVICES_AVAILABLE
+            "enhanced_service_used": ENHANCED_SERVICES_AVAILABLE
         }
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
-        logger.error(f"Get voices error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get voices: {str(e)}")
+        logger.error(f"Error fetching voices from TTS service: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch available voices.")
 
 @router.post("/voice-preview")
 async def generate_voice_preview(

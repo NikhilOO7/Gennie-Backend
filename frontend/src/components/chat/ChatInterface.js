@@ -4,7 +4,6 @@ import { MessageCircle, Mic, Keyboard } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import Message from './Message';
 import MessageInput from './MessageInput';
-import VoiceChat from './VoiceChat';
 import EnhancedVoiceInterface from '../voice/EnhancedVoiceInterface';
 import VoiceRecorder from '../voice/VoiceRecorder';
 import RAGVisualization from '../rag/RAGVisualization';
@@ -23,15 +22,13 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
-  const [inputMode, setInputMode] = useState('text'); // 'text', 'voice', 'enhanced-voice'
   const [connectionError, setConnectionError] = useState(false);
   const messagesEndRef = useRef(null);
   const connectionTimeoutRef = useRef(null);
   const eventListenersSetupRef = useRef(false);
 
-  // Define isVoiceMode based on chat mode or current input mode
-  const isVoiceMode = activeChat?.chat_mode === 'voice' || inputMode === 'voice' || inputMode === 'enhanced-voice';
-  const isEnhancedVoiceMode = inputMode === 'enhanced-voice' || activeChat?.chat_mode === 'enhanced-voice';
+  // Define isVoiceMode based on chat mode
+  const isVoiceMode = activeChat?.chat_mode === 'voice';
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -262,14 +259,6 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
     console.log('Audio response received:', audioData);
   }, []);
 
-  // Toggle between input modes
-  const toggleInputMode = () => {
-    const modes = ['text', 'voice', 'enhanced-voice'];
-    const currentIndex = modes.indexOf(inputMode);
-    const nextIndex = (currentIndex + 1) % modes.length;
-    setInputMode(modes[nextIndex]);
-  };
-
   // Handle regular text message
   const handleSendMessage = async (content, attachments = []) => {
     if (!content.trim() && attachments.length === 0) return;
@@ -456,59 +445,9 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
         </div>
       )}
 
-      {/* Input Area - Conditional rendering based on mode */}
+      {/* Input Area */}
       <div className="border-t bg-white">
-        {/* Input Mode Toggle */}
-        <div className="px-4 py-2 border-b bg-gray-50 flex items-center justify-between">
-          <div className="flex items-center space-x-2 text-sm text-gray-600">
-            <span>Input mode:</span>
-            <span className="font-medium">
-              {inputMode === 'text' && 'Text'}
-              {inputMode === 'voice' && 'Voice (Basic)'}
-              {inputMode === 'enhanced-voice' && 'Voice (Enhanced)'}
-            </span>
-            {!isConnected && (
-              <span className="text-red-500 text-xs">
-                (Some features disabled - connection lost)
-              </span>
-            )}
-          </div>
-          <button
-            onClick={toggleInputMode}
-            className="flex items-center space-x-1 px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-          >
-            {inputMode === 'text' && <Keyboard size={16} />}
-            {(inputMode === 'voice' || inputMode === 'enhanced-voice') && <Mic size={16} />}
-            <span>Switch Mode</span>
-          </button>
-        </div>
-
-        {/* Text Input */}
-        {inputMode === 'text' && (
-          <MessageInput 
-            onSendMessage={handleSendMessage}
-            disabled={!isConnected && !connectionError} // Allow sending via HTTP when disconnected
-          />
-        )}
-
-        {/* Basic Voice Input */}
-        {inputMode === 'voice' && (
-          <div className="p-4">
-            <VoiceRecorder
-              onTranscript={(transcript) => handleSendMessage(transcript)}
-              onError={(error) => console.error('Voice recording error:', error)}
-              language="en-US"
-              autoSend={true}
-              disabled={false} // Basic voice input doesn't require WebSocket
-            />
-            <div className="text-xs text-gray-500 text-center mt-2">
-              Click and hold to record. Basic voice recognition.
-            </div>
-          </div>
-        )}
-
-        {/* Enhanced Voice Input */}
-        {inputMode === 'enhanced-voice' && (
+        {isVoiceMode ? (
           <div className="p-4">
             <EnhancedVoiceInterface
               onTranscript={handleVoiceTranscript}
@@ -525,6 +464,11 @@ const ChatInterface = ({ activeChat, setActiveChat, chats, setChats }) => {
               )}
             </div>
           </div>
+        ) : (
+          <MessageInput
+            onSendMessage={handleSendMessage}
+            disabled={!isConnected && !connectionError} // Allow sending via HTTP when disconnected
+          />
         )}
       </div>
     </div>

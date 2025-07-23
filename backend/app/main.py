@@ -142,6 +142,9 @@ async def lifespan(app: FastAPI):
         # 4. Enhanced services check
         if ENHANCED_WEBSOCKET_AVAILABLE:
             logger.info("✅ Enhanced WebSocket voice streaming available")
+            from app.services.enhanced_tts_service import enhanced_tts_service
+            await enhanced_tts_service.warm_up_model()
+            logger.info("🔥 Enhanced TTS service warmed up")
         else:
             logger.warning("⚠️ Enhanced WebSocket features not available")
         

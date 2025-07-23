@@ -171,8 +171,19 @@ class ApiService {
     return this.request('/users/me/stats');
   }
 
-  async getVoices() {
-    return this.request('/voice/voices');
+  async getVoices(language_code) {
+    return this.request('/voice/voices', { params: { language_code } });
+  }
+
+  async getVoicePreferences() {
+    return this.request('/users/me/voice-preferences');
+  }
+
+  async updateVoicePreferences(prefs) {
+    return this.request('/users/me/voice-preferences', {
+      method: 'PUT',
+      body: JSON.stringify(prefs),
+    });
   }
 
   async getUserTopics() {
@@ -199,48 +210,6 @@ class ApiService {
     });
   }
 
-  async transcribeAudio(audioBlob, language = 'en-US') {
-    const formData = new FormData();
-    
-    // Ensure the blob has a proper filename with extension
-    const filename = audioBlob.type.includes('webm') ? 'recording.webm' : 'recording.wav';
-    formData.append('audio', audioBlob, filename);
-    formData.append('language_code', language);
-    
-    try {
-      // Try the AI router endpoint which should exist
-      const response = await fetch(`${this.baseURL}/ai/transcribe-audio`, {
-        method: 'POST',
-        headers: {
-          ...this.getAuthHeaders(),
-          // Don't set Content-Type for FormData - browser will set it with boundary
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Transcription failed');
-      }
-
-      const data = await response.json();
-      
-      // Ensure we have a transcript in the response
-      if (!data.transcript) {
-        throw new Error('No transcript in response');
-      }
-      
-      return {
-        transcript: data.transcript,
-        confidence: data.confidence || 0,
-        language: data.language || language,
-        duration: data.duration || 0
-      };
-    } catch (error) {
-      console.error('Transcription API error:', error);
-      throw error;
-    }
-  }
 }
 
 export default new ApiService();

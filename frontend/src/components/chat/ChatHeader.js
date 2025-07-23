@@ -21,7 +21,6 @@ const ChatHeader = ({
   setSoundEnabled,
   showRAGVisualization,
   setShowRAGVisualization,
-  inputMode,
   onToggleInputMode
 }) => {
   const [showOptions, setShowOptions] = useState(false);
@@ -42,33 +41,8 @@ const ChatHeader = ({
     }
   };
 
-  const getInputModeInfo = () => {
-    switch (inputMode) {
-      case 'voice':
-        return {
-          icon: Mic,
-          text: 'Voice (Basic)',
-          color: 'text-blue-500'
-        };
-      case 'enhanced-voice':
-        return {
-          icon: Zap,
-          text: 'Voice (Enhanced)',
-          color: 'text-purple-500'
-        };
-      default:
-        return {
-          icon: Keyboard,
-          text: 'Text',
-          color: 'text-gray-500'
-        };
-    }
-  };
-
   const connectionStatus = getConnectionStatus();
-  const inputModeInfo = getInputModeInfo();
   const ConnectionIcon = connectionStatus.icon;
-  const InputModeIcon = inputModeInfo.icon;
 
   return (
     <div className="border-b bg-white px-4 py-3">
@@ -88,12 +62,6 @@ const ChatHeader = ({
                   <span>{connectionStatus.text}</span>
                 </div>
                 
-                {/* Input Mode */}
-                <div className={`flex items-center space-x-1 ${inputModeInfo.color}`}>
-                  <InputModeIcon size={14} />
-                  <span>{inputModeInfo.text}</span>
-                </div>
-                
                 {/* Chat Mode */}
                 {chat?.chat_mode && (
                   <span className="px-2 py-1 bg-gray-100 rounded-full text-xs">
@@ -107,17 +75,6 @@ const ChatHeader = ({
 
         {/* Controls */}
         <div className="flex items-center space-x-2">
-          {/* Input Mode Toggle */}
-          {onToggleInputMode && (
-            <button
-              onClick={onToggleInputMode}
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-              title={`Switch from ${inputModeInfo.text} mode`}
-            >
-              <InputModeIcon size={18} />
-            </button>
-          )}
-
           {/* Sound Toggle */}
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
@@ -193,22 +150,6 @@ const ChatHeader = ({
           </div>
         </div>
       </div>
-
-      {/* Enhanced Mode Indicator */}
-      {inputMode === 'enhanced-voice' && (
-        <div className="mt-2 flex items-center space-x-2 text-xs text-purple-600 bg-purple-50 px-3 py-1 rounded-full">
-          <Zap size={12} />
-          <span>Enhanced voice mode active - Real-time streaming with emotion detection</span>
-        </div>
-      )}
-
-      {/* Voice Mode Indicator */}
-      {inputMode === 'voice' && (
-        <div className="mt-2 flex items-center space-x-2 text-xs text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
-          <Mic size={12} />
-          <span>Basic voice mode active - Click and hold to record</span>
-        </div>
-      )}
 
       {/* Disconnect Warning */}
       {!isConnected && (

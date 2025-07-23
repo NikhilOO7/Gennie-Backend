@@ -10,7 +10,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
-from app.routers.auth import get_current_user, get_current_verified_user
+from app.routers.auth import get_current_user, get_current_verified_user, get_current_user
 from app.routers.health import health_router
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,12 @@ class UserProfile(BaseModel):
 
 class UserSettings(BaseModel):
     settings: Dict[str, Any]
+
+class VoicePreferences(BaseModel):
+    voice_name: Optional[str] = None
+    voice_language: Optional[str] = None
+    speaking_rate: Optional[float] = None
+    pitch: Optional[float] = None
 
 class UserResponse(BaseModel):
     id: int
@@ -157,6 +163,27 @@ async def update_user_settings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update settings"
         )
+
+@users_router.get("/me/voice-preferences", response_model=VoicePreferences)
+async def get_voice_preferences(current_user: User = Depends(get_current_user)):
+    """Get user's voice preferences."""
+    return current_user.voice_preferences or {}
+
+@users_router.put("/me/voice-preferences", response_model=VoicePreferences)
+async def update_voice_preferences(
+    voice_prefs: VoicePreferences,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user's voice preferences."""
+    try:
+        current_user.voice_preferences = voice_prefs.dict(exclude_unset=True)
+        await db.commit()
+        return current_user.voice_preferences
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to update voice preferences for user {current_user.id}: {e}")
+        raise HTTPException(status_code=500, detail="Could not update voice preferences.")
 
 @users_router.get("/me/stats", response_model=UserStats)
 async def get_user_statistics(

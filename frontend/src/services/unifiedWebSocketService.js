@@ -587,16 +587,56 @@ class UnifiedWebSocketService {
     });
   }
 
-  startRecording() {
-    return this.send({
-      type: 'start_recording'
+  startRecording(options = {}) {
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      return;
+    }
+    this.audioChunksRef = [];
+    navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...this.audioConfig,
+        ...options,
+      }
+    }).then(stream => {
+      this.audioStream = stream;
+      this.mediaRecorder = new MediaRecorder(stream, {
+        mimeType: this.getSupportedMimeType(),
+        audioBitsPerSecond: 128000,
+      });
+      this.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.send(event.data);
+        }
+      };
+      this.mediaRecorder.start(100);
+      this.emit('recording_started');
+    }).catch(error => {
+      this.emit('error', { error });
     });
   }
 
   stopRecording() {
-    return this.send({
-      type: 'stop_recording'
-    });
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      this.mediaRecorder.stop();
+      this.audioStream.getTracks().forEach(track => track.stop());
+      this.emit('recording_stopped');
+    }
+  }
+
+  getSupportedMimeType() {
+    const mimeTypes = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/mpeg',
+      'audio/wav'
+    ];
+    for (const mimeType of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        return mimeType;
+      }
+    }
+    return 'audio/webm';
   }
 
   // Flush message queue

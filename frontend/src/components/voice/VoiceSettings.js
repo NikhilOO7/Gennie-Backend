@@ -1,37 +1,11 @@
-// components/voice/VoiceSettings.js
 import React, { useState, useEffect } from 'react';
 import { X, Volume2, Mic, Zap, Globe } from 'lucide-react';
+import apiService from '../../services/api';
 
 const VoiceSettings = ({ settings, onSettingsChange, onClose }) => {
   const [localSettings, setLocalSettings] = useState(settings);
   const [availableVoices, setAvailableVoices] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-
-  // Available voices by language
-  const voiceOptions = {
-    'en-US': [
-      { name: 'en-US-Neural2-F', label: 'Emma (Female, Natural)', type: 'Neural2' },
-      { name: 'en-US-Neural2-H', label: 'Aria (Female, Clear)', type: 'Neural2' },
-      { name: 'en-US-Neural2-D', label: 'Davis (Male, Professional)', type: 'Neural2' },
-      { name: 'en-US-Neural2-J', label: 'Jason (Male, Warm)', type: 'Neural2' },
-      { name: 'en-US-Studio-O', label: 'Olivia (Female, Studio)', type: 'Studio' },
-      { name: 'en-US-Studio-Q', label: 'Quinn (Male, Studio)', type: 'Studio' }
-    ],
-    'en-GB': [
-      { name: 'en-GB-Neural2-F', label: 'Freya (Female, British)', type: 'Neural2' },
-      { name: 'en-GB-Neural2-D', label: 'Daniel (Male, British)', type: 'Neural2' },
-      { name: 'en-GB-Studio-F', label: 'Fiona (Female, Studio)', type: 'Studio' },
-      { name: 'en-GB-Studio-B', label: 'Benjamin (Male, Studio)', type: 'Studio' }
-    ],
-    'es-US': [
-      { name: 'es-US-Neural2-A', label: 'Alonso (Male, Spanish)', type: 'Neural2' },
-      { name: 'es-US-Neural2-B', label: 'Bella (Female, Spanish)', type: 'Neural2' }
-    ],
-    'fr-FR': [
-      { name: 'fr-FR-Neural2-A', label: 'Antoine (Male, French)', type: 'Neural2' },
-      { name: 'fr-FR-Neural2-B', label: 'Brigitte (Female, French)', type: 'Neural2' }
-    ]
-  };
 
   const languageOptions = [
     { code: 'en-US', label: 'English (US)', flag: '🇺🇸' },
@@ -48,51 +22,63 @@ const VoiceSettings = ({ settings, onSettingsChange, onClose }) => {
 
   useEffect(() => {
     setLocalSettings(settings);
+    fetchVoices(settings.language);
   }, [settings]);
+
+  const fetchVoices = async (language) => {
+    setIsLoading(true);
+    try {
+      const response = await apiService.getVoices(language);
+      setAvailableVoices(response.voices);
+    } catch (error) {
+      console.error('Failed to fetch voices:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleSettingChange = (key, value) => {
     const newSettings = { ...localSettings, [key]: value };
     setLocalSettings(newSettings);
   };
 
-  const handleSave = () => {
-    onSettingsChange(localSettings);
-    onClose();
+  const handleSave = async () => {
+    try {
+      await apiService.updateVoicePreferences(localSettings);
+      onSettingsChange(localSettings);
+      onClose();
+    } catch (error) {
+      console.error('Failed to save voice preferences:', error);
+    }
   };
 
   const handleReset = () => {
     const defaultSettings = {
-      voice: 'en-US-Neural2-F',
-      speed: 1.0,
+      voice_name: 'en-US-Neural2-F',
+      speaking_rate: 1.0,
       pitch: 0.0,
-      language: 'en-US',
-      enableEnhancement: true,
-      emotionDetection: true
+      voice_language: 'en-US',
     };
     setLocalSettings(defaultSettings);
   };
 
   const handleLanguageChange = (language) => {
-    const availableVoicesForLang = voiceOptions[language] || [];
-    const defaultVoice = availableVoicesForLang[0]?.name || 'en-US-Neural2-F';
-    
-    handleSettingChange('language', language);
-    handleSettingChange('voice', defaultVoice);
+    handleSettingChange('voice_language', language);
+    fetchVoices(language);
   };
 
   const testVoice = async () => {
     setIsLoading(true);
     try {
-      // Test the current voice settings
       const testText = "Hello! This is a test of your selected voice settings.";
-      
-      // This would integrate with your TTS service
-      console.log('Testing voice:', localSettings.voice);
-      console.log('Test text:', testText);
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      const audio = await apiService.synthesizeSpeech(testText, {
+        voice_name: localSettings.voice_name,
+        language_code: localSettings.voice_language,
+        speaking_rate: localSettings.speaking_rate,
+        pitch: localSettings.pitch,
+      });
+      const audioData = new Audio(`data:audio/mp3;base64,${audio.audio_data}`);
+      audioData.play();
     } catch (error) {
       console.error('Voice test failed:', error);
     } finally {
@@ -100,7 +86,7 @@ const VoiceSettings = ({ settings, onSettingsChange, onClose }) => {
     }
   };
 
-  const currentVoices = voiceOptions[localSettings.language] || voiceOptions['en-US'];
+  const currentVoices = availableVoices;
 
   return (
     <div className="voice-settings-panel">

@@ -92,9 +92,6 @@ class EnhancedTTSService:
         }
         
         logger.info("Enhanced TTS service initialized")
-        
-        # Warm up the model
-        asyncio.create_task(self.warm_up_model())
     
     async def warm_up_model(self):
         """Pre-warm the model to reduce first-call latency"""
