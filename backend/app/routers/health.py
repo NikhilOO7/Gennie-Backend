@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 health_router = APIRouter()
 
 
-@health_router.get("/health")
+@health_router.get("/")
 async def health_check(
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis)

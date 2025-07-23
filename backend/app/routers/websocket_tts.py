@@ -553,3 +553,78 @@ async def voice_websocket_endpoint(
             "error": str(e),
             "is_final": True
         })
+
+async def handle_gemini_voice_stream(websocket: WebSocket, user: User, messages: list, user_preferences=None, voice_settings=None):
+    """
+    Stream Gemini response and TTS audio chunks in real time.
+    """
+    try:
+        # Start Gemini streaming response
+        async for chunk in gemini_service.generate_chat_response(
+            messages, stream=True, user_preferences=user_preferences
+        ):
+            if chunk.get("success") and chunk.get("content"):
+                text_chunk = chunk["content"]
+                # Synthesize audio for the chunk
+                tts_result = await tts_service.synthesize_speech(
+                    text_chunk,
+                    voice_name=voice_settings.get("voice_name") if voice_settings else None,
+                    audio_format="mp3",
+                    speaking_rate=voice_settings.get("speaking_rate", 1.0) if voice_settings else 1.0,
+                    pitch=voice_settings.get("pitch", 0.0) if voice_settings else 0.0,
+                )
+                audio_data = base64.b64encode(tts_result["audio_content"]).decode()
+                # Send both text and audio chunk to frontend
+                await websocket.send_json({
+                    "type": "stream_chunk",
+                    "text": text_chunk,
+                    "audio_data": audio_data,
+                    "is_final": False
+                })
+        # Send final message
+        await websocket.send_json({"type": "stream_end", "is_final": True})
+    except Exception as e:
+        await websocket.send_json({
+            "type": "stream_error",
+            "error": str(e)
+        })
+
+async def handle_voice_message_with_rag_and_emotion(websocket: WebSocket, user: User, transcript: str, db, redis_client):
+    """
+    Handle a voice message: RAG retrieval, emotion detection, Gemini streaming, TTS streaming
+    """
+    from app.services.rag_service import rag_service
+    from app.services.emotion_service import emotion_service
+
+    # 1. Emotion detection
+    emotion_data = await emotion_service.analyze_emotion(transcript)
+
+    # 2. RAG context retrieval
+    rag_context = await rag_service.get_context_for_query(
+        query=transcript,
+        user_id=user.id,
+        db=db,
+        redis_client=redis_client,
+        limit=5
+    )
+    context_text = rag_context.get("context_text", "")
+
+    # 3. Build Gemini prompt/messages
+    system_prompt = "You are a helpful, empathetic assistant. Use retrieved context and user emotion to respond naturally."
+    if context_text:
+        system_prompt += f"\nRelevant info: {context_text}"
+    if emotion_data and emotion_data.get("primary_emotion"):
+        system_prompt += f"\nUser emotion: {emotion_data['primary_emotion']} (confidence: {emotion_data['confidence_score']})"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": transcript}
+    ]
+
+    # 4. Stream Gemini + TTS response
+    await handle_gemini_voice_stream(
+        websocket,
+        user,
+        messages,
+        user_preferences=None,
+        voice_settings=None
+    )

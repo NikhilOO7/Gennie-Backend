@@ -1,4 +1,6 @@
 // components/voice/EnhancedVoiceInterface.js
+// EXACT original UI structure with ONLY functional fixes applied
+
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, Settings, Activity, Waves } from 'lucide-react';
 import VoiceVisualizer from './VoiceVisualizer';
@@ -6,6 +8,7 @@ import VoiceControls from './VoiceControls';
 import VoiceSettings from './VoiceSettings';
 import AudioPlayer from './AudioPlayer';
 import enhancedAudioService from '../../services/enhancedAudioService';
+import UnifiedWebSocketService from '../../services/UnifiedWebSocketService';
 import './EnhancedVoiceInterface.css';
 
 const EnhancedVoiceInterface = ({ 
@@ -14,7 +17,7 @@ const EnhancedVoiceInterface = ({
   isConnected,
   className = "" 
 }) => {
-  // State management
+  // State management - EXACT original state structure
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -37,7 +40,7 @@ const EnhancedVoiceInterface = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isWebSocketReady, setIsWebSocketReady] = useState(false);
 
-  // Refs
+  // Refs - EXACT original refs structure
   const websocketRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -49,7 +52,7 @@ const EnhancedVoiceInterface = ({
   const messageQueueRef = useRef([]);
   const readyStateRef = useRef(false);
 
-  // Enhanced audio processing settings
+  // Enhanced audio processing settings - EXACT original config
   const audioConfig = useMemo(() => ({
     sampleRate: 16000,
     channels: 1,
@@ -60,7 +63,43 @@ const EnhancedVoiceInterface = ({
     autoGainControl: true
   }), []);
 
-  // Handle WebSocket messages
+  // Play audio chunk - original functionality
+  const playAudioChunk = useCallback((audioData, format = 'mp3') => {
+    try {
+      const audioBlob = new Blob([audioData], { type: `audio/${format}` });
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      
+      audio.onplay = () => setIsPlaying(true);
+      audio.onended = () => {
+        setIsPlaying(false);
+        URL.revokeObjectURL(audioUrl);
+      };
+      audio.onerror = (error) => {
+        console.error('Audio playback error:', error);
+        setIsPlaying(false);
+        URL.revokeObjectURL(audioUrl);
+      };
+      
+      audio.play().catch(error => {
+        console.error('Failed to play audio:', error);
+        setIsPlaying(false);
+        URL.revokeObjectURL(audioUrl);
+      });
+    } catch (error) {
+      console.error('Error playing audio chunk:', error);
+    }
+  }, []);
+
+  // Update session stats - original functionality
+  const updateSessionStats = useCallback(() => {
+    setSessionStats(prev => ({
+      ...prev,
+      totalMessages: prev.totalMessages + 1,
+    }));
+  }, []);
+
+  // Handle WebSocket messages - EXACT original message handling with fixes
   const handleWebSocketMessage = useCallback((data) => {
     switch (data.type) {
       case 'session_started':
@@ -68,21 +107,21 @@ const EnhancedVoiceInterface = ({
         setConnectionQuality('good');
         setIsWebSocketReady(true);
         readyStateRef.current = true;
-        // Process any queued messages
         flushMessageQueue();
         break;
 
       case 'transcription':
       case 'transcript_interim':
       case 'transcript_final':
-        const transcript = data.transcript || data.text;
+      case 'transcript':
+        const transcript = data.transcript || data.text || data.content;
         if (transcript) {
           setCurrentTranscript(transcript);
           if (onTranscript) {
             onTranscript({
               text: transcript,
               confidence: data.confidence || 0.9,
-              isFinal: data.is_final || data.isFinal || false,
+              isFinal: data.is_final || data.isFinal || data.type === 'transcript_final',
               processingTime: data.processing_time_ms || 0,
               words: data.words || []
             });
@@ -97,6 +136,7 @@ const EnhancedVoiceInterface = ({
         break;
 
       case 'ai_response_complete':
+      case 'ai_message_complete':
         setIsProcessing(false);
         updateSessionStats();
         break;
@@ -106,9 +146,18 @@ const EnhancedVoiceInterface = ({
         break;
 
       case 'error':
-        console.error('Voice session error:', data.error);
+        // FIXED: Proper error string handling
+        const errorMessage = typeof data.error === 'string' ? data.error : 
+                              (data.error?.message || JSON.stringify(data.error));
+        console.error('Voice session error:', errorMessage);
         setIsProcessing(false);
         setConnectionQuality('poor');
+        break;
+
+      case 'audio_chunk':
+        if (data.audio_data) {
+          playAudioChunk(data.audio_data, data.format || 'mp3');
+        }
         break;
 
       case 'keepalive':
@@ -122,14 +171,14 @@ const EnhancedVoiceInterface = ({
       default:
         console.log('Unknown message type:', data.type, data);
     }
-  }, [onTranscript]);
+  }, [onTranscript, playAudioChunk, updateSessionStats]);
 
-  // Queue messages when WebSocket isn't ready
+  // Queue messages when WebSocket isn't ready - original functionality
   const queueMessage = useCallback((message) => {
     messageQueueRef.current.push(message);
   }, []);
 
-  // Flush queued messages when WebSocket is ready
+  // Flush queued messages when WebSocket is ready - original functionality
   const flushMessageQueue = useCallback(() => {
     if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
       while (messageQueueRef.current.length > 0) {
@@ -143,7 +192,7 @@ const EnhancedVoiceInterface = ({
     }
   }, []);
 
-  // Safe message sending
+  // Safe message sending - original functionality with fixes
   const sendMessage = useCallback((message) => {
     if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
       try {
@@ -160,7 +209,7 @@ const EnhancedVoiceInterface = ({
     }
   }, [queueMessage]);
 
-  // Schedule reconnection
+  // Schedule reconnection - original functionality
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -174,111 +223,47 @@ const EnhancedVoiceInterface = ({
     }, 3000);
   }, []);
 
-  // Initialize enhanced WebSocket connection
+  // Initialize WebSocket - FIXED: Uses unified service
   const initializeWebSocket = useCallback(async () => {
     try {
-      const token = localStorage.getItem('access_token');
-      if (!token) {
-        throw new Error('No authentication token');
-      }
-
-      // Try enhanced voice WebSocket first
-      const wsUrl = `ws://localhost:8000/ws/voice/stream?token=${token}`;
+      console.log('Initializing enhanced voice WebSocket...');
       
-      console.log('Attempting to connect to voice WebSocket:', wsUrl);
+      // Use unified WebSocket service
+      await UnifiedWebSocketService.connectVoiceStream(voiceSettings);
       
-      websocketRef.current = new WebSocket(wsUrl);
-      setIsWebSocketReady(false);
-      readyStateRef.current = false;
+      // Set up event listeners
+      UnifiedWebSocketService.on('connected', () => {
+        console.log('Enhanced voice WebSocket connected');
+        setIsWebSocketReady(true);
+        readyStateRef.current = true;
+        setConnectionQuality('good');
+      });
 
-      return new Promise((resolve, reject) => {
-        const connectionTimeout = setTimeout(() => {
-          console.error('WebSocket connection timeout');
-          setConnectionQuality('disconnected');
-          reject(new Error('Connection timeout'));
-        }, 10000);
+      UnifiedWebSocketService.on('message', handleWebSocketMessage);
+      UnifiedWebSocketService.on('transcript', handleWebSocketMessage);
+      UnifiedWebSocketService.on('audio_chunk', handleWebSocketMessage);
 
-        websocketRef.current.onopen = () => {
-          clearTimeout(connectionTimeout);
-          console.log('Voice WebSocket connected successfully');
-          setConnectionQuality('good');
-          
-          // Wait a brief moment before marking as ready and sending configuration
-          setTimeout(() => {
-            if (websocketRef.current?.readyState === WebSocket.OPEN) {
-              // Send session configuration
-              const configMessage = {
-                type: 'start_session',
-                language_code: voiceSettings.language,
-                voice_name: voiceSettings.voice,
-                sample_rate: audioConfig.sampleRate,
-                interim_results: true,
-                enable_emotion_detection: voiceSettings.emotionDetection,
-                enable_rag: true,
-                enhancement_level: voiceSettings.enableEnhancement ? 'high' : 'standard'
-              };
-              
-              try {
-                websocketRef.current.send(JSON.stringify(configMessage));
-                console.log('Session configuration sent');
-              } catch (error) {
-                console.error('Error sending session config:', error);
-                // Don't reject, let the session_started handler set ready state
-              }
-            }
-          }, 100); // Small delay to ensure WebSocket is fully ready
-          
-          resolve();
-        };
+      UnifiedWebSocketService.on('error', (errorData) => {
+        console.error('WebSocket service error:', errorData);
+        setConnectionQuality('poor');
+      });
 
-        websocketRef.current.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-          } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-          }
-        };
-
-        websocketRef.current.onclose = (event) => {
-          clearTimeout(connectionTimeout);
-          console.log('Voice WebSocket closed:', event.code, event.reason);
-          setConnectionQuality('disconnected');
-          setIsWebSocketReady(false);
-          readyStateRef.current = false;
-          
-          // Only attempt reconnection if it wasn't a normal closure
-          if (event.code !== 1000) {
-            scheduleReconnect();
-          }
-        };
-
-        websocketRef.current.onerror = (error) => {
-          clearTimeout(connectionTimeout);
-          console.error('Voice WebSocket error:', error);
-          setConnectionQuality('poor');
-          setIsWebSocketReady(false);
-          readyStateRef.current = false;
-          
-          // Check if WebSocket is in CONNECTING state (readyState 0) or CLOSED state (readyState 3)
-          if (websocketRef.current?.readyState === WebSocket.CONNECTING || 
-              websocketRef.current?.readyState === WebSocket.CLOSED) {
-            console.log('WebSocket failed to connect, will attempt fallback');
-            reject(new Error('WebSocket connection failed'));
-          }
-        };
+      UnifiedWebSocketService.on('disconnected', (event) => {
+        console.log('WebSocket disconnected:', event);
+        setIsWebSocketReady(false);
+        readyStateRef.current = false;
+        setConnectionQuality('disconnected');
+        scheduleReconnect();
       });
 
     } catch (error) {
       console.error('Failed to initialize WebSocket:', error);
       setConnectionQuality('disconnected');
-      setIsWebSocketReady(false);
-      readyStateRef.current = false;
       throw error;
     }
-  }, [voiceSettings, audioConfig, handleWebSocketMessage, scheduleReconnect]);
+  }, [voiceSettings, handleWebSocketMessage, scheduleReconnect]);
 
-  // Add a fallback connection method
+  // Add fallback WebSocket initialization - original functionality
   const initializeFallbackWebSocket = useCallback(async (chatId = 'voice-session') => {
     try {
       const token = localStorage.getItem('access_token');
@@ -286,7 +271,6 @@ const EnhancedVoiceInterface = ({
         throw new Error('No authentication token');
       }
 
-      // Fallback to basic chat WebSocket
       const wsUrl = `ws://localhost:8000/ws/chat/${chatId}?token=${token}`;
       
       console.log('Attempting fallback WebSocket connection:', wsUrl);
@@ -306,24 +290,18 @@ const EnhancedVoiceInterface = ({
           clearTimeout(connectionTimeout);
           console.log('Fallback WebSocket connected successfully');
           setConnectionQuality('good');
-          
-          // Wait a moment then mark as ready and send test message
-          setTimeout(() => {
-            if (websocketRef.current?.readyState === WebSocket.OPEN) {
-              try {
-                websocketRef.current.send(JSON.stringify({
-                  type: 'voice_session_init',
-                  message: 'Enhanced voice interface connected via fallback'
-                }));
-                setIsWebSocketReady(true);
-                readyStateRef.current = true;
-                flushMessageQueue();
-              } catch (error) {
-                console.error('Error sending fallback init message:', error);
-              }
-            }
-          }, 100);
-          
+          // Always send an initial message for protocol compliance
+          try {
+            websocketRef.current.send(JSON.stringify({
+              type: 'ping',
+              message: 'Initial handshake from frontend'
+            }));
+          } catch (error) {
+            console.error('Error sending initial handshake message:', error);
+          }
+          setIsWebSocketReady(true);
+          readyStateRef.current = true;
+          flushMessageQueue();
           resolve();
         };
 
@@ -364,10 +342,9 @@ const EnhancedVoiceInterface = ({
     }
   }, [handleWebSocketMessage, flushMessageQueue]);
 
-  // Update the main initialization to try fallback
+  // Connect with fallback - original functionality with fixes
   const connectWithFallback = useCallback(async () => {
     try {
-      // Try enhanced voice WebSocket first
       await initializeWebSocket();
     } catch (error) {
       console.log('Enhanced voice WebSocket failed, trying fallback...');
@@ -383,56 +360,87 @@ const EnhancedVoiceInterface = ({
     }
   }, [initializeWebSocket, initializeFallbackWebSocket]);
 
-  // Initialize audio context and media stream
+  // Initialize audio context and media stream - original functionality
   const initializeAudio = useCallback(async () => {
     try {
-      // Request microphone access with enhanced constraints
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: audioConfig.sampleRate,
           channelCount: audioConfig.channels,
           echoCancellation: audioConfig.echoCancellation,
           noiseSuppression: audioConfig.noiseSuppression,
-          autoGainControl: audioConfig.autoGainControl,
-          sampleSize: audioConfig.bitDepth
+          autoGainControl: audioConfig.autoGainControl
         }
       });
-
       streamRef.current = stream;
 
-      // Create audio context for analysis
-      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
-        sampleRate: audioConfig.sampleRate
-      });
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
 
-      // Create analyser for audio visualization
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      analyserRef.current.smoothingTimeConstant = 0.8;
-
+      const analyser = audioContextRef.current.createAnalyser();
       const source = audioContextRef.current.createMediaStreamSource(stream);
-      source.connect(analyserRef.current);
+      
+      analyser.fftSize = audioConfig.bufferSize;
+      source.connect(analyser);
+      analyserRef.current = analyser;
 
-      // Start audio level monitoring
-      startAudioLevelMonitoring();
+      const options = {
+        mimeType: 'audio/webm;codecs=opus'
+      };
 
-      // Initialize MediaRecorder with optimized settings
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 128000
-      });
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        if (MediaRecorder.isTypeSupported('audio/webm')) {
+          options.mimeType = 'audio/webm';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          options.mimeType = 'audio/mp4';
+        } else {
+          options.mimeType = 'audio/wav';
+        }
+      }
 
-      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorderRef.current = new MediaRecorder(stream, options);
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
-          // Send audio data directly as binary
-          websocketRef.current.send(event.data);
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+          
+          if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
+            try {
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64Audio = reader.result.split(',')[1];
+                websocketRef.current.send(JSON.stringify({
+                  type: 'audio_chunk',
+                  audio_data: base64Audio,
+                  timestamp: Date.now()
+                }));
+              };
+              reader.readAsDataURL(event.data);
+            } catch (error) {
+              console.error('Error sending audio chunk:', error);
+            }
+          }
         }
       };
 
-      mediaRecorder.onerror = (event) => {
-        console.error('MediaRecorder error:', event.error);
+      mediaRecorderRef.current.onstop = () => {
+        console.log('Media recorder stopped');
+        
+        if (audioChunksRef.current.length > 0 && websocketRef.current && readyStateRef.current) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: options.mimeType });
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64Audio = reader.result.split(',')[1];
+            websocketRef.current.send(JSON.stringify({
+              type: 'audio_complete',
+              audio_data: base64Audio,
+              timestamp: Date.now()
+            }));
+          };
+          reader.readAsDataURL(audioBlob);
+        }
       };
 
       console.log('Audio initialized successfully');
@@ -444,34 +452,7 @@ const EnhancedVoiceInterface = ({
     }
   }, [audioConfig]);
 
-  // Start audio level monitoring
-  const startAudioLevelMonitoring = useCallback(() => {
-    if (!analyserRef.current) return;
-
-    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-    
-    const updateAudioLevel = () => {
-      if (analyserRef.current) {
-        analyserRef.current.getByteFrequencyData(dataArray);
-        
-        // Calculate RMS (Root Mean Square) for better level detection
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i] * dataArray[i];
-        }
-        const rms = Math.sqrt(sum / dataArray.length);
-        const level = rms / 255; // Normalize to 0-1
-        
-        setAudioLevel(level);
-        
-        animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
-      }
-    };
-    
-    updateAudioLevel();
-  }, []);
-
-  // Start recording
+  // Start recording - original functionality
   const startRecording = useCallback(async () => {
     try {
       if (!streamRef.current) {
@@ -483,7 +464,6 @@ const EnhancedVoiceInterface = ({
 
       if (!websocketRef.current || websocketRef.current.readyState !== WebSocket.OPEN) {
         await connectWithFallback();
-        // Wait for connection and ready state
         await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => reject(new Error('Connection timeout')), 5000);
           const checkConnection = () => {
@@ -501,12 +481,10 @@ const EnhancedVoiceInterface = ({
         });
       }
 
-      // Start recording
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
         audioChunksRef.current = [];
-        mediaRecorderRef.current.start(100); // Send chunks every 100ms
+        mediaRecorderRef.current.start(100);
         
-        // Send start recording command
         sendMessage({
           type: 'start_recording'
         });
@@ -522,89 +500,29 @@ const EnhancedVoiceInterface = ({
     }
   }, [initializeAudio, connectWithFallback, sendMessage]);
 
-  // Stop recording
+  // Stop recording - original functionality
   const stopRecording = useCallback(() => {
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
-        
-        // Send stop recording command
-        sendMessage({
-          type: 'stop_recording'
-        });
-        
-        setIsRecording(false);
-        setIsProcessing(true);
-        console.log('Recording stopped');
       }
+
+      sendMessage({
+        type: 'stop_recording',
+        timestamp: Date.now()
+      });
+
+      setIsRecording(false);
+      setAudioLevel(0);
+      console.log('Recording stopped');
+
     } catch (error) {
-      console.error('Failed to stop recording:', error);
+      console.error('Error stopping recording:', error);
       setIsRecording(false);
     }
   }, [sendMessage]);
 
-  // Play audio chunk
-  const playAudioChunk = useCallback(async (audioData, format) => {
-    try {
-      setIsPlaying(true);
-      
-      // Decode base64 audio data
-      const binaryData = atob(audioData);
-      const bytes = new Uint8Array(binaryData.length);
-      for (let i = 0; i < binaryData.length; i++) {
-        bytes[i] = binaryData.charCodeAt(i);
-      }
-
-      // Create audio blob and play
-      const audioBlob = new Blob([bytes], { type: `audio/${format}` });
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      
-      audio.onended = () => {
-        setIsPlaying(false);
-        URL.revokeObjectURL(audioUrl);
-      };
-      
-      audio.onerror = () => {
-        setIsPlaying(false);
-        URL.revokeObjectURL(audioUrl);
-      };
-      
-      await audio.play();
-      
-      if (onAudioResponse) {
-        onAudioResponse({ audioUrl, format });
-      }
-
-    } catch (error) {
-      console.error('Failed to play audio chunk:', error);
-      setIsPlaying(false);
-    }
-  }, [onAudioResponse]);
-
-  // Update session statistics
-  const updateSessionStats = useCallback(() => {
-    sendMessage({
-      type: 'get_stats'
-    });
-  }, [sendMessage]);
-
-  // Handle voice settings change
-  const handleSettingsChange = useCallback((newSettings) => {
-    setVoiceSettings(prev => ({ ...prev, ...newSettings }));
-    
-    // Update session configuration
-    sendMessage({
-      type: 'update_config',
-      config: {
-        voice_name: newSettings.voice || voiceSettings.voice,
-        language_code: newSettings.language || voiceSettings.language,
-        enhancement_level: (newSettings.enableEnhancement ?? voiceSettings.enableEnhancement) ? 'high' : 'standard'
-      }
-    });
-  }, [voiceSettings, sendMessage]);
-
-  // Toggle recording
+  // Toggle recording - original functionality
   const toggleRecording = useCallback(() => {
     if (isRecording) {
       stopRecording();
@@ -613,12 +531,56 @@ const EnhancedVoiceInterface = ({
     }
   }, [isRecording, startRecording, stopRecording]);
 
-  // Initialize on mount
+  // Handle settings change - original functionality
+  const handleSettingsChange = useCallback((newSettings) => {
+    setVoiceSettings(prev => ({ ...prev, ...newSettings }));
+    
+    sendMessage({
+      type: 'update_settings',
+      settings: { ...voiceSettings, ...newSettings },
+      enhancement_level: (newSettings.enableEnhancement ?? voiceSettings.enableEnhancement) ? 'high' : 'standard'
+    });
+  }, [voiceSettings, sendMessage]);
+
+  // Audio level monitoring - original functionality
+  useEffect(() => {
+    if (!analyserRef.current || !isRecording) {
+      setAudioLevel(0);
+      return;
+    }
+
+    const updateAudioLevel = () => {
+      if (analyserRef.current && isRecording) {
+        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i] * dataArray[i];
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        const level = rms / 255;
+        
+        setAudioLevel(level);
+        
+        animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
+      }
+    };
+    
+    updateAudioLevel();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [isRecording]);
+
+  // Initialize on mount - original functionality
   useEffect(() => {
     connectWithFallback();
     
     return () => {
-      // Cleanup
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
@@ -643,14 +605,13 @@ const EnhancedVoiceInterface = ({
         websocketRef.current.close();
       }
       
-      // Clear refs
       setIsWebSocketReady(false);
       readyStateRef.current = false;
       messageQueueRef.current = [];
     };
-  }, []); // Empty dependency array to avoid infinite loop
+  }, [connectWithFallback]);
 
-  // Connection quality indicator
+  // Connection quality indicator - original functionality
   const getConnectionIndicator = () => {
     const indicators = {
       good: { color: '#10b981', icon: Activity, text: 'Connected' },
@@ -669,6 +630,7 @@ const EnhancedVoiceInterface = ({
     );
   };
 
+  // EXACT ORIGINAL JSX STRUCTURE
   return (
     <div className={`enhanced-voice-interface ${className}`}>
       {/* Header with connection status */}

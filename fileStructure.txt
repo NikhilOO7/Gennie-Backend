@@ -1,0 +1,172 @@
+.
+├── backend
+│   ├── LICENSE
+│   ├── PROJECT_STRUCTURE.md
+│   ├── Procfile
+│   ├── README.md
+│   ├── alembic
+│   │   ├── env.py
+│   │   ├── script.py.mako
+│   │   └── versions
+│   │       ├── 5578f8b9db9f_initial_tables_already_exist.py
+│   │       ├── add_topic_personalization.py
+│   │       └── backup_793e27aceba8_initial_schema.py
+│   ├── alembic.ini
+│   ├── app
+│   │   ├── __init__.py
+│   │   ├── auto_migrate.py
+│   │   ├── config.py
+│   │   ├── database.py
+│   │   ├── logger.py
+│   │   ├── main.py
+│   │   ├── middleware.py
+│   │   ├── models
+│   │   │   ├── __init__.py
+│   │   │   ├── chat.py
+│   │   │   ├── emotion.py
+│   │   │   ├── message.py
+│   │   │   ├── message_audio.py
+│   │   │   ├── user.py
+│   │   │   └── user_preference.py
+│   │   ├── routers
+│   │   │   ├── __init__.py
+│   │   │   ├── ai.py
+│   │   │   ├── auth.py
+│   │   │   ├── chat.py
+│   │   │   ├── enhanced_websocket_voice.py
+│   │   │   ├── health.py
+│   │   │   ├── users.py
+│   │   │   ├── voice.py
+│   │   │   ├── voice_mock.py
+│   │   │   ├── voice_utils.py
+│   │   │   ├── websocket.py
+│   │   │   └── websocket_tts.py
+│   │   ├── schemas.py
+│   │   ├── services
+│   │   │   ├── __init__.py
+│   │   │   ├── audio_processor.py
+│   │   │   ├── emotion_service.py
+│   │   │   ├── enhanced_rag_service.py
+│   │   │   ├── enhanced_speech_service.py
+│   │   │   ├── enhanced_tts_service.py
+│   │   │   ├── gemini_service.py
+│   │   │   ├── personalization.py
+│   │   │   ├── prompt_service.py
+│   │   │   ├── rag_service.py
+│   │   │   ├── speech_service.py
+│   │   │   ├── topics_service.py
+│   │   │   ├── tts_service.py
+│   │   │   ├── utils.py
+│   │   │   ├── vector_service.py
+│   │   │   └── voice_streaming_service.py
+│   │   └── utils
+│   │       └── __init__.py
+│   ├── config
+│   │   └── production.py
+│   ├── credentials.json
+│   ├── data
+│   │   ├── postgres
+│   │   └── redis
+│   ├── deployment
+│   │   ├── docker
+│   │   └── scripts
+│   ├── docker-compose.yml
+│   ├── docker-compose.yml.example
+│   ├── dockerfile.txt
+│   ├── env.txt
+│   ├── gcp_setup.sh
+│   ├── init-db.sql
+│   ├── init-scripts
+│   ├── pyproject.toml
+│   ├── requirements.txt
+│   ├── scripts
+│   │   ├── check_services.sh
+│   │   ├── db_backup.sh
+│   │   ├── db_restore.sh
+│   │   ├── migrate.sh
+│   │   └── migration_fix.py
+│   ├── service.yaml
+│   ├── setup-scripts
+│   │   ├── setup_database.sh
+│   │   ├── setup_migrations.py
+│   │   └── test_gcp.py
+│   ├── setup_phase1_completion.py
+│   ├── test_gemini.py
+│   └── tests
+│       ├── __init__.py
+│       ├── conftest.py
+│       ├── integration
+│       │   └── __init__.py
+│       ├── test_auth.py
+│       ├── test_voice_integration.py
+│       └── unit
+│           └── __init__.py
+├── fileStructure.txt
+└── frontend
+    ├── README.md
+    ├── package-lock.json
+    ├── package.json
+    ├── public
+    │   ├── favicon.ico
+    │   ├── index.html
+    │   ├── logo192.png
+    │   ├── logo512.png
+    │   ├── manifest.json
+    │   └── robots.txt
+    └── src
+        ├── App.css
+        ├── App.js
+        ├── App.test.js
+        ├── components
+        │   ├── auth
+        │   │   ├── AuthContext.js
+        │   │   └── AuthPage.js
+        │   ├── chat
+        │   │   ├── ChatHeader.js
+        │   │   ├── ChatInterface.js
+        │   │   ├── Message.js
+        │   │   ├── MessageInput.js
+        │   │   ├── NewChatModal.js
+        │   │   ├── VoiceChat.css
+        │   │   └── VoiceChat.js
+        │   ├── dashboard
+        │   │   ├── Dashboard.js
+        │   │   └── Sidebar.js
+        │   ├── health
+        │   │   └── HealthDashboard.js
+        │   ├── profile
+        │   │   └── UserProfile.js
+        │   ├── rag
+        │   │   └── RAGVisualization.js
+        │   ├── settings
+        │   │   └── SettingsModal.js
+        │   ├── shared
+        │   │   └── LoadingSpinner.js
+        │   └── voice
+        │       ├── AudioPlayer.js
+        │       ├── EnhancedVoiceInterface.css
+        │       ├── EnhancedVoiceInterface.js
+        │       ├── RecordButton.js
+        │       ├── TTSControls.js
+        │       ├── VoiceControls.js
+        │       ├── VoiceRecorder.js
+        │       ├── VoiceSettings.js
+        │       └── VoiceVisualizer.js
+        ├── index.css
+        ├── index.js
+        ├── logo.svg
+        ├── reportWebVitals.js
+        ├── services
+        │   ├── AudioService.js
+        │   ├── api.js
+        │   ├── enhancedAudioService.js
+        │   └── unifiedWebSocketService.js
+        ├── setupTests.js
+        ├── utils
+        │   ├── audioStreamingUtils.js
+        │   ├── constants.js
+        │   ├── helpers.js
+        │   └── styles.js
+        └── websocket_test.html
+
+38 directories, 132 files

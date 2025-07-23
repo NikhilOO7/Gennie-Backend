@@ -733,6 +733,23 @@ async def verify_email(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Email verification failed"
         )
+    
+async def get_current_user_ws(token: str, db: AsyncSession) -> Optional[User]:
+    """Get user from JWT token for WebSocket connections"""
+    try:
+        # Verify token
+        payload = verify_token(token, "access")
+        user_id = int(payload.get("sub"))
+        
+        # Get user from database
+        stmt = select(User).where(User.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        return user if user and user.is_active else None
+    except Exception as e:
+        logger.warning(f"WebSocket authentication failed: {str(e)}")
+        return None
 
 # Export commonly used functions
 __all__ = [
@@ -742,5 +759,7 @@ __all__ = [
     "get_current_verified_user",
     "verify_token",
     "create_access_token",
-    "create_refresh_token"
+    "create_refresh_token",
+    "get_current_user_ws",
+    "authenticate_user",
 ]

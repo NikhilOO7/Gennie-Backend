@@ -1,4 +1,6 @@
 // components/voice/AudioPlayer.js
+// Fixed version - proper function order to prevent initialization errors
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Pause, Volume2, VolumeX, SkipBack, SkipForward, RotateCcw } from 'lucide-react';
 
@@ -17,7 +19,9 @@ const AudioPlayer = ({
   onTimeUpdate,
   onLoadStart,
   onLoadEnd,
-  onError
+  onError,
+  isPlaying: externalIsPlaying,
+  onPlayStateChange
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -32,127 +36,7 @@ const AudioPlayer = ({
   const progressRef = useRef(null);
   const volumeRef = useRef(null);
 
-  // Initialize audio element
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    // Set up event listeners
-    const handleLoadStart = () => {
-      setIsLoading(true);
-      setError(null);
-      onLoadStart?.();
-    };
-
-    const handleLoadedData = () => {
-      setIsLoading(false);
-      setDuration(audio.duration);
-      onLoadEnd?.();
-    };
-
-    const handleTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-      onTimeUpdate?.(audio.currentTime);
-    };
-
-    const handlePlay = () => {
-      setIsPlaying(true);
-      onPlay?.();
-    };
-
-    const handlePause = () => {
-      setIsPlaying(false);
-      onPause?.();
-    };
-
-    const handleEnded = () => {
-      setIsPlaying(false);
-      setCurrentTime(0);
-      onEnded?.();
-    };
-
-    const handleError = (e) => {
-      setIsLoading(false);
-      setIsPlaying(false);
-      setError('Failed to load audio');
-      onError?.(e);
-    };
-
-    const handleVolumeChange = () => {
-      setVolume(audio.volume);
-      setIsMuted(audio.muted);
-    };
-
-    const handleRateChange = () => {
-      setPlaybackRate(audio.playbackRate);
-    };
-
-    // Add event listeners
-    audio.addEventListener('loadstart', handleLoadStart);
-    audio.addEventListener('loadeddata', handleLoadedData);
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('play', handlePlay);
-    audio.addEventListener('pause', handlePause);
-    audio.addEventListener('ended', handleEnded);
-    audio.addEventListener('error', handleError);
-    audio.addEventListener('volumechange', handleVolumeChange);
-    audio.addEventListener('ratechange', handleRateChange);
-
-    return () => {
-      audio.removeEventListener('loadstart', handleLoadStart);
-      audio.removeEventListener('loadeddata', handleLoadedData);
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handlePause);
-      audio.removeEventListener('ended', handleEnded);
-      audio.removeEventListener('error', handleError);
-      audio.removeEventListener('volumechange', handleVolumeChange);
-      audio.removeEventListener('ratechange', handleRateChange);
-    };
-  }, [onPlay, onPause, onEnded, onTimeUpdate, onLoadStart, onLoadEnd, onError]);
-
-  // Handle audio source changes
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    if (audioUrl) {
-      audio.src = audioUrl;
-    } else if (audioData) {
-      // Handle base64 or blob data
-      try {
-        let blob;
-        if (typeof audioData === 'string') {
-          // Base64 data
-          const binaryData = atob(audioData);
-          const bytes = new Uint8Array(binaryData.length);
-          for (let i = 0; i < binaryData.length; i++) {
-            bytes[i] = binaryData.charCodeAt(i);
-          }
-          blob = new Blob([bytes], { type: `audio/${format}` });
-        } else {
-          // Already a blob
-          blob = audioData;
-        }
-        
-        const url = URL.createObjectURL(blob);
-        audio.src = url;
-        
-        return () => URL.revokeObjectURL(url);
-      } catch (error) {
-        setError('Invalid audio data');
-        onError?.(error);
-      }
-    }
-  }, [audioUrl, audioData, format, onError]);
-
-  // Auto play
-  useEffect(() => {
-    if (autoPlay && audioRef.current && !isPlaying) {
-      handlePlayPause(); // Use the defined function instead
-    }
-  }, [autoPlay, audioUrl, audioData, isPlaying, handlePlayPause]);
-
+  // Define all callback functions FIRST before any useEffect that uses them
   const handlePlayPause = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -233,13 +117,159 @@ const AudioPlayer = ({
     setPlaybackRate(speed);
   }, []);
 
-  const formatTime = (time) => {
+  const formatTime = useCallback((time) => {
     if (!time || !isFinite(time)) return '0:00';
     
     const minutes = Math.floor(time / 60);
     const seconds = Math.floor(time % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  };
+  }, []);
+
+  // Sync with external play state
+  useEffect(() => {
+    if (typeof externalIsPlaying === 'boolean' && externalIsPlaying !== isPlaying) {
+      setIsPlaying(externalIsPlaying);
+      
+      const audio = audioRef.current;
+      if (audio) {
+        if (externalIsPlaying && audio.paused) {
+          audio.play().catch(console.error);
+        } else if (!externalIsPlaying && !audio.paused) {
+          audio.pause();
+        }
+      }
+    }
+  }, [externalIsPlaying, isPlaying]);
+
+  // Initialize audio element
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // Set up event listeners
+    const handleLoadStart = () => {
+      setIsLoading(true);
+      setError(null);
+      onLoadStart?.();
+    };
+
+    const handleLoadedData = () => {
+      setIsLoading(false);
+      setDuration(audio.duration);
+      onLoadEnd?.();
+    };
+
+    const handleTimeUpdate = () => {
+      setCurrentTime(audio.currentTime);
+      onTimeUpdate?.(audio.currentTime);
+    };
+
+    const handlePlay = () => {
+      setIsPlaying(true);
+      onPlay?.();
+      onPlayStateChange?.(true);
+    };
+
+    const handlePause = () => {
+      setIsPlaying(false);
+      onPause?.();
+      onPlayStateChange?.(false);
+    };
+
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+      onEnded?.();
+      onPlayStateChange?.(false);
+    };
+
+    const handleError = (e) => {
+      setIsLoading(false);
+      setIsPlaying(false);
+      setError('Failed to load audio');
+      onError?.(e);
+      onPlayStateChange?.(false);
+    };
+
+    const handleVolumeChangeEvent = () => {
+      setVolume(audio.volume);
+      setIsMuted(audio.muted);
+    };
+
+    const handleRateChange = () => {
+      setPlaybackRate(audio.playbackRate);
+    };
+
+    // Add event listeners
+    audio.addEventListener('loadstart', handleLoadStart);
+    audio.addEventListener('loadeddata', handleLoadedData);
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
+    audio.addEventListener('volumechange', handleVolumeChangeEvent);
+    audio.addEventListener('ratechange', handleRateChange);
+
+    return () => {
+      audio.removeEventListener('loadstart', handleLoadStart);
+      audio.removeEventListener('loadeddata', handleLoadedData);
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleError);
+      audio.removeEventListener('volumechange', handleVolumeChangeEvent);
+      audio.removeEventListener('ratechange', handleRateChange);
+    };
+  }, [onPlay, onPause, onEnded, onTimeUpdate, onLoadStart, onLoadEnd, onError, onPlayStateChange]);
+
+  // Handle audio source changes
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (audioUrl) {
+      audio.src = audioUrl;
+    } else if (audioData) {
+      // Handle base64 or blob data
+      try {
+        let blob;
+        if (typeof audioData === 'string') {
+          // Base64 data
+          const binaryData = atob(audioData);
+          const bytes = new Uint8Array(binaryData.length);
+          for (let i = 0; i < binaryData.length; i++) {
+            bytes[i] = binaryData.charCodeAt(i);
+          }
+          blob = new Blob([bytes], { type: `audio/${format}` });
+        } else {
+          // Already a blob
+          blob = audioData;
+        }
+        
+        const url = URL.createObjectURL(blob);
+        audio.src = url;
+        
+        return () => URL.revokeObjectURL(url);
+      } catch (error) {
+        setError('Invalid audio data');
+        onError?.(error);
+      }
+    }
+  }, [audioUrl, audioData, format, onError]);
+
+  // Auto play - NOW this can safely use handlePlayPause since it's defined above
+  useEffect(() => {
+    if (autoPlay && audioRef.current && !isPlaying && !isLoading && !error) {
+      // Small delay to ensure audio is ready
+      const timer = setTimeout(() => {
+        handlePlayPause();
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [autoPlay, isPlaying, isLoading, error, handlePlayPause]);
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 

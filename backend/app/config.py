@@ -49,6 +49,7 @@ class Settings(BaseModel):
     DATABASE_MAX_OVERFLOW: int = 20
     DATABASE_POOL_TIMEOUT: int = 30
     DATABASE_POOL_RECYCLE: int = 3600
+    AUTO_MIGRATE: bool = False
     
     # Redis Settings
     REDIS_URL: str = "redis://localhost:6379/0"
