@@ -9,7 +9,7 @@ import EnhancedVoiceInterface from '../voice/EnhancedVoiceInterface';
 import VoiceRecorder from '../voice/VoiceRecorder';
 import RAGVisualization from '../rag/RAGVisualization';
 import apiService from '../../services/api';
-import unifiedWebSocketService from '../../services/UnifiedWebSocketService';
+import unifiedWebSocketService from '../../services/unifiedWebSocketService';
 import enhancedAudioService from '../../services/enhancedAudioService';
 import { playNotificationSound } from '../../utils/helpers';
 
