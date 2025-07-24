@@ -4,7 +4,7 @@ import { Mic, Volume2, AlertCircle, MessageCircle } from 'lucide-react';
 import VoiceRecorder from '../voice/VoiceRecorder';
 import Message from './Message';
 import apiService from '../../services/api';
-import unifiedWebSocketService from '../../services/UnifiedWebSocketService';
+import unifiedWebSocketService from '../../services/unifiedWebSocketService';
 import enhancedAudioService from '../../services/enhancedAudioService';
 import { playNotificationSound, formatRelativeTime } from '../../utils/helpers';
 import { styles } from '../../utils/styles';
