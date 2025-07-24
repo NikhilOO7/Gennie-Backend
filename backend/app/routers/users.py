@@ -178,13 +178,20 @@ async def update_voice_preferences(
     """Update user's voice preferences."""
     try:
         current_user.voice_preferences = voice_prefs.dict(exclude_unset=True)
+        current_user.updated_at = datetime.now(timezone.utc)
         await db.commit()
+        await db.refresh(current_user)
+
+        logger.info(f"Voice preferences updated for user: {current_user.id}")
+
         return current_user.voice_preferences
     except Exception as e:
-        await db.rollback()
         logger.error(f"Failed to update voice preferences for user {current_user.id}: {e}")
-        raise HTTPException(status_code=500, detail="Could not update voice preferences.")
-
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update voice preferences"
+        )
 @users_router.get("/me/stats", response_model=UserStats)
 async def get_user_statistics(
     current_user: User = Depends(get_current_user),
