@@ -99,6 +99,51 @@ const EnhancedVoiceInterface = ({
     }));
   }, []);
 
+  // Queue messages when WebSocket isn't ready - original functionality
+  const queueMessage = useCallback((message) => {
+    messageQueueRef.current.push(message);
+  }, []);
+
+  // Flush queued messages when WebSocket is ready - original functionality
+  const flushMessageQueue = useCallback(() => {
+    if (UnifiedWebSocketService.isConnected()) {
+      while (messageQueueRef.current.length > 0) {
+        const message = messageQueueRef.current.shift();
+        UnifiedWebSocketService.send(message);
+      }
+    } else if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
+      while (messageQueueRef.current.length > 0) {
+        const message = messageQueueRef.current.shift();
+        try {
+          websocketRef.current.send(JSON.stringify(message));
+        } catch (error) {
+          console.error('Error sending queued message:', error);
+        }
+      }
+    }
+  }, []);
+
+  // Safe message sending - original functionality with fixes
+  const sendMessage = useCallback((message) => {
+    if (UnifiedWebSocketService.isConnected()) {
+      return UnifiedWebSocketService.send(message);
+    }
+
+    if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
+      try {
+        websocketRef.current.send(JSON.stringify(message));
+        return true;
+      } catch (error) {
+        console.error('Error sending message:', error);
+        queueMessage(message);
+        return false;
+      }
+    } else {
+      queueMessage(message);
+      return false;
+    }
+  }, [queueMessage]);
+
   // Handle WebSocket messages - EXACT original message handling with fixes
   const handleWebSocketMessage = useCallback((data) => {
     switch (data.type) {
@@ -171,107 +216,7 @@ const EnhancedVoiceInterface = ({
       default:
         console.log('Unknown message type:', data.type, data);
     }
-  }, [onTranscript, playAudioChunk, updateSessionStats]);
-
-  // Queue messages when WebSocket isn't ready - original functionality
-  const queueMessage = useCallback((message) => {
-    messageQueueRef.current.push(message);
-  }, []);
-
-  // Flush queued messages when WebSocket is ready - original functionality
-  const flushMessageQueue = useCallback(() => {
-    if (UnifiedWebSocketService.isConnected()) {
-      while (messageQueueRef.current.length > 0) {
-        const message = messageQueueRef.current.shift();
-        UnifiedWebSocketService.send(message);
-      }
-    } else if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
-      while (messageQueueRef.current.length > 0) {
-        const message = messageQueueRef.current.shift();
-        try {
-          websocketRef.current.send(JSON.stringify(message));
-        } catch (error) {
-          console.error('Error sending queued message:', error);
-        }
-      }
-    }
-  }, []);
-
-  // Safe message sending - original functionality with fixes
-  const sendMessage = useCallback((message) => {
-    if (UnifiedWebSocketService.isConnected()) {
-      return UnifiedWebSocketService.send(message);
-    }
-
-    if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
-      try {
-        websocketRef.current.send(JSON.stringify(message));
-        return true;
-      } catch (error) {
-        console.error('Error sending message:', error);
-        queueMessage(message);
-        return false;
-      }
-    } else {
-      queueMessage(message);
-      return false;
-    }
-  }, [queueMessage]);
-
-  // Schedule reconnection - original functionality
-  const scheduleReconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-
-    reconnectTimeoutRef.current = setTimeout(() => {
-      const wsOpen = websocketRef.current?.readyState === WebSocket.OPEN;
-      if (!UnifiedWebSocketService.isConnected() && !wsOpen) {
-        console.log('Attempting to reconnect...');
-        connectWithFallback();
-      }
-    }, 3000);
-  }, [connectWithFallback]);
-
-  // Initialize WebSocket - FIXED: Uses unified service
-  const initializeWebSocket = useCallback(async () => {
-    try {
-      console.log('Initializing enhanced voice WebSocket...');
-      
-      // Use unified WebSocket service
-      await UnifiedWebSocketService.connectVoiceStream(voiceSettings);
-      
-      // Set up event listeners
-      UnifiedWebSocketService.on('connected', () => {
-        console.log('Enhanced voice WebSocket connected');
-        setIsWebSocketReady(true);
-        readyStateRef.current = true;
-        setConnectionQuality('good');
-      });
-
-      UnifiedWebSocketService.on('message', handleWebSocketMessage);
-      UnifiedWebSocketService.on('transcript', handleWebSocketMessage);
-      UnifiedWebSocketService.on('audio_chunk', handleWebSocketMessage);
-
-      UnifiedWebSocketService.on('error', (errorData) => {
-        console.error('WebSocket service error:', errorData);
-        setConnectionQuality('poor');
-      });
-
-      UnifiedWebSocketService.on('disconnected', (event) => {
-        console.log('WebSocket disconnected:', event);
-        setIsWebSocketReady(false);
-        readyStateRef.current = false;
-        setConnectionQuality('disconnected');
-        scheduleReconnect();
-      });
-
-    } catch (error) {
-      console.error('Failed to initialize WebSocket:', error);
-      setConnectionQuality('disconnected');
-      throw error;
-    }
-  }, [voiceSettings, handleWebSocketMessage, scheduleReconnect]);
+  }, [onTranscript, playAudioChunk, updateSessionStats, flushMessageQueue]);
 
   // Add fallback WebSocket initialization - original functionality
   const initializeFallbackWebSocket = useCallback(async (chatId = 'voice-session') => {
@@ -352,7 +297,60 @@ const EnhancedVoiceInterface = ({
     }
   }, [handleWebSocketMessage, flushMessageQueue]);
 
-  // Connect with fallback - original functionality with fixes
+  // Initialize WebSocket - FIXED: Uses unified service
+  const initializeWebSocket = useCallback(async () => {
+    try {
+      console.log('Initializing enhanced voice WebSocket...');
+      
+      // Use unified WebSocket service
+      await UnifiedWebSocketService.connectVoiceStream(voiceSettings);
+      
+      // Set up event listeners
+      UnifiedWebSocketService.on('connected', () => {
+        console.log('Enhanced voice WebSocket connected');
+        setIsWebSocketReady(true);
+        readyStateRef.current = true;
+        setConnectionQuality('good');
+      });
+
+      UnifiedWebSocketService.on('message', handleWebSocketMessage);
+      UnifiedWebSocketService.on('transcript', handleWebSocketMessage);
+      UnifiedWebSocketService.on('audio_chunk', handleWebSocketMessage);
+
+      UnifiedWebSocketService.on('error', (errorData) => {
+        console.error('WebSocket service error:', errorData);
+        setConnectionQuality('poor');
+      });
+
+      UnifiedWebSocketService.on('disconnected', (event) => {
+        console.log('WebSocket disconnected:', event);
+        setIsWebSocketReady(false);
+        readyStateRef.current = false;
+        setConnectionQuality('disconnected');
+        // Schedule reconnect without circular dependency
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+        }
+        reconnectTimeoutRef.current = setTimeout(() => {
+          const wsOpen = websocketRef.current?.readyState === WebSocket.OPEN;
+          if (!UnifiedWebSocketService.isConnected() && !wsOpen) {
+            console.log('Attempting to reconnect...');
+            // Call connectWithFallback directly instead of through callback
+            initializeWebSocket().catch(() => {
+              initializeFallbackWebSocket().catch(console.error);
+            });
+          }
+        }, 3000);
+      });
+
+    } catch (error) {
+      console.error('Failed to initialize WebSocket:', error);
+      setConnectionQuality('disconnected');
+      throw error;
+    }
+  }, [voiceSettings, handleWebSocketMessage, initializeFallbackWebSocket]);
+
+  // Connect with fallback - FIXED: Removed circular dependency
   const connectWithFallback = useCallback(async () => {
     try {
       await initializeWebSocket();
