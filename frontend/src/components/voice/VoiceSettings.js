@@ -22,20 +22,28 @@ const VoiceSettings = ({ settings, onSettingsChange, onClose }) => {
 
   useEffect(() => {
     setLocalSettings(settings);
-    fetchVoices(settings.language);
+    fetchVoices(settings.voice_language);
   }, [settings]);
 
-  const fetchVoices = async (language) => {
-    setIsLoading(true);
-    try {
-      const response = await apiService.getVoices(language);
-      setAvailableVoices(response.voices);
-    } catch (error) {
-      console.error('Failed to fetch voices:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+// Add new error state
+const [availableVoices, setAvailableVoices] = useState([]);
+const [isLoading, setIsLoading] = useState(false);
+const [error, setError] = useState(null);
+
+const fetchVoices = async (language) => {
+  setIsLoading(true);
+  setError(null);
+  try {
+    const response = await apiService.getVoices(language);
+    setAvailableVoices(response.voices);
+  } catch (error) {
+    console.error('Failed to fetch voices:', error);
+    setError('Failed to load available voices. Please try again later.');
+    // Optionally set default voices as fallback
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const handleSettingChange = (key, value) => {
     const newSettings = { ...localSettings, [key]: value };
