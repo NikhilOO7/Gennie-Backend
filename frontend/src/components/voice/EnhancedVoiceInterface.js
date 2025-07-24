@@ -231,7 +231,7 @@ const EnhancedVoiceInterface = ({
         connectWithFallback();
       }
     }, 3000);
-  }, [connectWithFallback]);
+  }, []);
 
   // Initialize WebSocket - FIXED: Uses unified service
   const initializeWebSocket = useCallback(async () => {
