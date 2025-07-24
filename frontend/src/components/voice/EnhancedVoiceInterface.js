@@ -8,7 +8,7 @@ import VoiceControls from './VoiceControls';
 import VoiceSettings from './VoiceSettings';
 import AudioPlayer from './AudioPlayer';
 import enhancedAudioService from '../../services/enhancedAudioService';
-import UnifiedWebSocketService from '../../services/UnifiedWebSocketService';
+import UnifiedWebSocketService from '../../services/unifiedWebSocketService';
 import './EnhancedVoiceInterface.css';
 
 const EnhancedVoiceInterface = ({ 
@@ -180,7 +180,12 @@ const EnhancedVoiceInterface = ({
 
   // Flush queued messages when WebSocket is ready - original functionality
   const flushMessageQueue = useCallback(() => {
-    if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
+    if (UnifiedWebSocketService.isConnected()) {
+      while (messageQueueRef.current.length > 0) {
+        const message = messageQueueRef.current.shift();
+        UnifiedWebSocketService.send(message);
+      }
+    } else if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
       while (messageQueueRef.current.length > 0) {
         const message = messageQueueRef.current.shift();
         try {
@@ -194,6 +199,10 @@ const EnhancedVoiceInterface = ({
 
   // Safe message sending - original functionality with fixes
   const sendMessage = useCallback((message) => {
+    if (UnifiedWebSocketService.isConnected()) {
+      return UnifiedWebSocketService.send(message);
+    }
+
     if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
       try {
         websocketRef.current.send(JSON.stringify(message));
@@ -214,14 +223,15 @@ const EnhancedVoiceInterface = ({
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
-    
+
     reconnectTimeoutRef.current = setTimeout(() => {
-      if (websocketRef.current?.readyState !== WebSocket.OPEN) {
+      const wsOpen = websocketRef.current?.readyState === WebSocket.OPEN;
+      if (!UnifiedWebSocketService.isConnected() && !wsOpen) {
         console.log('Attempting to reconnect...');
         connectWithFallback();
       }
     }, 3000);
-  }, []);
+  }, [connectWithFallback]);
 
   // Initialize WebSocket - FIXED: Uses unified service
   const initializeWebSocket = useCallback(async () => {
@@ -406,38 +416,60 @@ const EnhancedVoiceInterface = ({
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
           
-          if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
-            try {
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                const base64Audio = reader.result.split(',')[1];
+          const sendChunk = (base64Audio) => {
+            if (UnifiedWebSocketService.isConnected()) {
+              UnifiedWebSocketService.send({
+                type: 'audio_chunk',
+                audio_data: base64Audio,
+                timestamp: Date.now()
+              });
+            } else if (websocketRef.current?.readyState === WebSocket.OPEN && readyStateRef.current) {
+              try {
                 websocketRef.current.send(JSON.stringify({
                   type: 'audio_chunk',
                   audio_data: base64Audio,
                   timestamp: Date.now()
                 }));
-              };
-              reader.readAsDataURL(event.data);
-            } catch (error) {
-              console.error('Error sending audio chunk:', error);
+              } catch (error) {
+                console.error('Error sending audio chunk:', error);
+              }
             }
+          };
+
+          try {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64Audio = reader.result.split(',')[1];
+              sendChunk(base64Audio);
+            };
+            reader.readAsDataURL(event.data);
+          } catch (error) {
+            console.error('Error processing audio chunk:', error);
           }
         }
       };
 
       mediaRecorderRef.current.onstop = () => {
         console.log('Media recorder stopped');
-        
-        if (audioChunksRef.current.length > 0 && websocketRef.current && readyStateRef.current) {
+
+        if (audioChunksRef.current.length > 0) {
           const audioBlob = new Blob(audioChunksRef.current, { type: options.mimeType });
           const reader = new FileReader();
           reader.onloadend = () => {
             const base64Audio = reader.result.split(',')[1];
-            websocketRef.current.send(JSON.stringify({
-              type: 'audio_complete',
-              audio_data: base64Audio,
-              timestamp: Date.now()
-            }));
+            if (UnifiedWebSocketService.isConnected()) {
+              UnifiedWebSocketService.send({
+                type: 'audio_complete',
+                audio_data: base64Audio,
+                timestamp: Date.now()
+              });
+            } else if (websocketRef.current && readyStateRef.current) {
+              websocketRef.current.send(JSON.stringify({
+                type: 'audio_complete',
+                audio_data: base64Audio,
+                timestamp: Date.now()
+              }));
+            }
           };
           reader.readAsDataURL(audioBlob);
         }
