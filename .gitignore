@@ -202,3 +202,4 @@ ssl/
 # Logs
 *.log
 logs/
+new-commit-files/
